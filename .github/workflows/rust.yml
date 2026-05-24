@@ -23,13 +23,15 @@ jobs:
           
     - name: Checkout main repo
       uses: actions/checkout@v4
+      with:
+        path: main-app
    
     - name: Build
+      working-directory: ./main-app
       run: cargo build --verbose
-      env: 
-        CARGO_PATH_CRATES_IO_MY_CRATE: "{ path = 'kdfs' }"
       
     - name: Run tests
+      working-directory: ./main-app
       run: cargo test --verbose
-      env: 
-        CARGO_PATH_CRATES_IO_MY_CRATE: "{ path = 'kdfs' }"
+      
+      
