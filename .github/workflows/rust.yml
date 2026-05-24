@@ -24,5 +24,8 @@ jobs:
    
     - name: Build
       run: cargo build --verbose
+      env: CARGO_PATH_CRATES_IO_MY_CRATE: "{ path = 'kdfs' }"
+      
     - name: Run tests
       run: cargo test --verbose
+      env: CARGO_PATH_CRATES_IO_MY_CRATE: "{ path = 'kdfs' }"
