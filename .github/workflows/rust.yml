@@ -16,10 +16,10 @@ jobs:
 
     steps:
     - uses: actions/checkout@v4
-    - uses: actions/checkout@v4
+    - name: Checkout shared crates
+      uses: actions/checkout@v4
       with:
           repository: warthog33/kdfs
-          path: ../
     - name: Build
       run: cargo build --verbose
     - name: Run tests
