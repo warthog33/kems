@@ -1,0 +1,66 @@
+[package]
+name = "kems"
+version = "0.1.0"
+edition = "2024"
+
+[features]
+all = ["rustcrypto-ml-kem", "rustcrypto-sha1", "rustcrypto-sha2", "rustcrypto-rsa", "rustcrypto-x25519", "rustcrypto-x448", "rustcrypto-hmac", "rustcrypto-sha3", "rustcrypto-k256", "rustcrypto-p224", "rustcrypto-p256", "rustcrypto-p384", "rustcrypto-p521", "rustcrypto-aeskw"]
+
+rustcrypto-ml-kem = ["dep:ml-kem"]
+rustcrypto-sha1 = ["dep:sha1", "kdfs/rustcrypto-sha1"]
+rustcrypto-sha2 = ["dep:sha2", "kdfs/rustcrypto-sha2"]
+rustcrypto-sha3 = ["dep:sha3", "dep:shake"]
+rustcrypto-rsa = ["dep:rsa"]
+rustcrypto-x25519 = [ "dep:x25519-dalek" ]
+rustcrypto-x448 = [ "dep:x448" ]
+rustcrypto-hmac = ["dep:hmac", "kdfs/rustcrypto-hmac"]
+rustcrypto-p224 = ["dep:p224"]
+rustcrypto-p256 = ["dep:p256"]
+rustcrypto-p384 = ["dep:p384"]
+rustcrypto-p521 = ["dep:p521"]
+rustcrypto-k256 = ["dep:k256"]
+rustcrypto-aeskw =["dep:aes-kw"]
+
+[dependencies]
+kem = { version = "=0.3.0-pre.0" }
+kdfs = { path = "../kdfs" }
+cipher = { version = "0.5.0-rc.0", features = ["alloc"] }
+digest = "0.11.0"
+elliptic-curve = { version = "0.14.0-rc.24", features = ["ecdh", "sec1"], package="elliptic-curve" }
+crypto-bigint = { version = "0.7.0-rc.1" }
+rand_core = { version = "0.6.4", features = ["getrandom"], package="rand_core" }  # needed by src/lib.rs
+#rand_core = { version = "0.10.0-rc-2", package="rand_core" }  # needed by src/lib.rs
+rand = { version = "0.10.0-rc.8"}
+generic-array = { version = "1.3.5", features=["hybrid-array-0_4"] }
+
+const-oid = {version = "0.9.6"}
+
+
+k256 = { version = "0.14.0-rc.9", optional = true }
+p224 = { version = "0.14.0-rc.9", optional = true }
+p256 = { version = "0.14.0-rc.9", optional = true }
+p384 = { version = "0.14.0-rc.9", optional = true }
+p521 = { version = "0.14.0-rc.9", optional = true }
+ml-kem = { version = "0.2.1", optional = true, features=["deterministic"] }
+#ml-kem = { version = "0.3.2", optional = true, features=["hazmat"] }
+sha1 = { version = "0.11.0", optional = true }
+sha2 = { version = "0.11.0", optional = true }
+sha3 = { version = "0.12.0", optional = true }
+shake = { version = "0.1.0", optional = true }
+rsa  = { version = "0.10.0-rc.18", optional = true, features = ["hazmat"]}
+aes-kw = { version = "0.3.0", optional = true }
+hmac = { version = "0.13.0", optional = true }
+
+
+x25519-dalek = { version = "2.0.0", features = ["static_secrets"], optional = true }
+x448 = { version = "0.14.0-pre.9", features = ["static_secrets"], optional=true}
+
+hex-literal = "0.4.1"
+
+[dev-dependencies]
+kems = { path = ".", features = ["all"] } 
+
+der = { version = "0.8.0-rc.10", features=["derive"], package="der"}
+base64 = "0.21.5"
+bp256 = { version = "0.14.0-rc.0" }
+serde_json = "1.0.128"
