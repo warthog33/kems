@@ -49,7 +49,7 @@ fn auth_x25519_kem () {
     let sender_public_key = PublicKey::from(&sender_secret_key);
 
     //let encapsulator = X25519AuthEncapsulator::<EcCombinerAllPubKeys::<Kdf1::<Sha256>>,U16>::from_keys(recipient_public_key, sender_secret_key);
-    type X25519Kdf1Sha256 = KemAuthWithKdf::<X25519AuthCapsulator, CombinerAllPubKeys, Kdf1::<Sha256>,U16>;
+    type X25519Kdf1Sha256 = KemAuthWithKdf::<X25519AuthCapsulator<SeedAsScalar>, CombinerAllPubKeys, Kdf1::<Sha256>,U16>;
     let encapsulator = X25519Kdf1Sha256::encap_from_keys(recipient_public_key, sender_secret_key);
     let (c0_send, k_send) = encapsulator.encapsulate(&mut OsRng).unwrap();
 

@@ -480,9 +480,9 @@ where   C: CurveArithmetic + PointCompression,
 /// with Elliptic Curves implementing the RustCryoto CurveArithmetic traits
 /// 
 //pub struct EcdhAuthCapsulator<C,K,L,DE> (PhantomData<C>, PhantomData<K>, PhantomData<L>, PhantomData<DE>);
-pub struct EcdhAuthCapsulator<C,DE> (PhantomData<C>, PhantomData<DE>);
+pub struct EcdhAuthCapsulator<C,DE,G> (PhantomData<C>, PhantomData<DE>, PhantomData<G>);
 
-impl<C, DE> Capsulator for EcdhAuthCapsulator<C,DE>
+impl<C, DE, G> Capsulator for EcdhAuthCapsulator<C,DE, G>
 where 
     DE: EncodeGenericArray<PublicKey<C>> + DecodeSlice<PublicKey<C>> + DecodeSlice<SecretKey<C>> + EncodeGenericArray<SecretKey<C>>, 
     <DE as EncodeGenericArray<PublicKey<C>>>::EncodedLen: ArraySize,  
@@ -491,7 +491,7 @@ where
     C::AffinePoint: ToSec1Point<C> + FromSec1Point<C>, 
     <C::FieldBytesSize as Add>::Output: ArraySize,
 {
-    type Encapsulator = EcdhAuthEncapsulator<C,DE>;
+    type Encapsulator = EcdhAuthEncapsulator<C,DE,G>;
     type Decapsulator = EcdhAuthDecapsulator<C,DE>;
     type CiphertextSize = <DE as EncodeGenericArray<PublicKey<C>>>::EncodedLen;
     type SharedKeySize = Sum<C::FieldBytesSize, C::FieldBytesSize>;
@@ -502,7 +502,7 @@ where
 }
 
 
-impl<C, DE> EcdhAuthCapsulator<C,DE>
+impl<C, DE, G> EcdhAuthCapsulator<C,DE,G>
 where DE: EncodeGenericArray<PublicKey<C>> + DecodeSlice<PublicKey<C>> + DecodeSlice<SecretKey<C>> + EncodeGenericArray<SecretKey<C>>, 
     C: CurveArithmetic+PointCompression, 
     C::FieldBytesSize: ModulusSize,
@@ -523,18 +523,18 @@ where DE: EncodeGenericArray<PublicKey<C>> + DecodeSlice<PublicKey<C>> + DecodeS
     {
         EcdhAuthDecapsulator { recipient_private, sender_public, phantom: PhantomData}
     }
-    pub fn encap_from_keys ( recipient_public:PublicKey<C>, sender_private:SecretKey<C> ) -> EcdhAuthEncapsulator<C, DE>
+    pub fn encap_from_keys ( recipient_public:PublicKey<C>, sender_private:SecretKey<C> ) -> EcdhAuthEncapsulator<C, DE,G>
     {
-        EcdhAuthEncapsulator { recipient_public, sender_private, _phantom5: PhantomData}
+        EcdhAuthEncapsulator { recipient_public, sender_private, _phantom5: PhantomData, _phantom6: PhantomData}
     }
 }
 
 
 
 /// Authenticated KEM based upon Elliptic Curve Diffie Hellman with SEC1 compressed encoding of the ciphertext
-pub type EcdhAuthCapsulatorCompressed<C> = EcdhAuthCapsulator<C, EcCompressedEncoder<C>>;
+pub type EcdhAuthCapsulatorCompressed<C,G> = EcdhAuthCapsulator<C, EcCompressedEncoder<C>, G>;
 /// Authenticated KEM based upon Elliptic Curve Diffie Hellman with SEC1 uncompressed encoding of the ciphertext
-pub type EcdhAuthCapsulatorUncompressed<C> = EcdhAuthCapsulator<C, EcUncompressedEncoder<C>>;
+pub type EcdhAuthCapsulatorUncompressed<C,G> = EcdhAuthCapsulator<C, EcUncompressedEncoder<C>,G>;
 
 
 
@@ -547,32 +547,33 @@ pub type EcdhAuthCapsulatorUncompressed<C> = EcdhAuthCapsulator<C, EcUncompresse
 /// Struct for creating authenticating encapsulated keys using diffie-hellman
 /// 
 //pub struct EcdhAuthEncapsulator <C: CurveArithmetic+PointCompression, K: EcdhAuthCombiner, L: ArrayLength<u8>, DE>
-pub struct EcdhAuthEncapsulator <C: CurveArithmetic+PointCompression, DE>
+pub struct EcdhAuthEncapsulator <C: CurveArithmetic+PointCompression, DE,G>
 {
     recipient_public: PublicKey<C>,
     sender_private: SecretKey<C>,
-    _phantom5: PhantomData<DE>
+    _phantom5: PhantomData<DE>,
+    _phantom6: PhantomData<G>,
 }
 
 /// Specialization of EcdhAuthEncapsulator using a compressed form of public key and without public keys being used in the key derivation function
-pub type EcdhAuthEncapsulatorCompressed<C> = EcdhAuthEncapsulator<C,EcCompressedEncoder<C>>;
+pub type EcdhAuthEncapsulatorCompressed<C,G> = EcdhAuthEncapsulator<C,EcCompressedEncoder<C>,G>;
 /// Specialization of EcdhAuthEncapsulator using an uncompressed form of public key and without public keys being used in the key derivation function
-pub type EcdhAuthEncapsulatorUncompressed<C> = EcdhAuthEncapsulator<C,EcUncompressedEncoder<C>>;
+pub type EcdhAuthEncapsulatorUncompressed<C,G> = EcdhAuthEncapsulator<C,EcUncompressedEncoder<C>,G>;
 
 
-impl<C,DE> FromKeys for EcdhAuthEncapsulator<C,DE> 
+impl<C,DE,G> FromKeys for EcdhAuthEncapsulator<C,DE,G> 
 where   C: CurveArithmetic+PointCompression,
 {
     type PrivateKey = SecretKey<C>;
     type PublicKey = PublicKey<C>;
 
     fn from_keys ( pub_key: Self::PublicKey, priv_key: Self::PrivateKey ) -> Self {
-        Self { sender_private: priv_key, recipient_public: pub_key, _phantom5: PhantomData}
+        Self { sender_private: priv_key, recipient_public: pub_key, _phantom5: PhantomData, _phantom6: PhantomData}
     }
 }
 
 
-impl<C,DE> Encapsulate<GenericArray<u8,DE::EncodedLen>, Array<u8,Sum<C::FieldBytesSize, C::FieldBytesSize>>> for EcdhAuthEncapsulator<C,DE>
+impl<C,DE,G> Encapsulate<GenericArray<u8,DE::EncodedLen>, Array<u8,Sum<C::FieldBytesSize, C::FieldBytesSize>>> for EcdhAuthEncapsulator<C,DE,G>
 where   //FieldBytesSize<C>: ModulusSize,
         DE: EncodeGenericArray<PublicKey<C>> + DecodeSlice<PublicKey<C>>,
         C: CurveArithmetic + PointCompression,
@@ -617,18 +618,20 @@ where   //FieldBytesSize<C>: ModulusSize,
 
 
 
-impl<C,DE> EncapsulateDeterministic2<GenericArray<u8,DE::EncodedLen>, Array<u8,Sum<C::FieldBytesSize, C::FieldBytesSize>>> for EcdhAuthEncapsulator<C,DE>
+impl<C,DE,G> EncapsulateDeterministic2<GenericArray<u8,DE::EncodedLen>, Array<u8,Sum<C::FieldBytesSize, C::FieldBytesSize>>> for EcdhAuthEncapsulator<C,DE,G>
 where   //FieldBytesSize<C>: ModulusSize,
         DE: EncodeGenericArray<PublicKey<C>> + DecodeSlice<PublicKey<C>>,
         C: CurveArithmetic + PointCompression,
         <C::FieldBytesSize as Add>::Output: ArraySize,
+        G: DeriveKeyPairFromSeed<SecretKey<C>, PublicKey=PublicKey<C>>,
 {
     type Error = ();
     type SeedSize = C::FieldBytesSize;
     fn encapsulate_deterministic(&self, seed: &[u8]) -> Result<(GenericArray<u8,DE::EncodedLen>, Array<u8,Sum<C::FieldBytesSize, C::FieldBytesSize>>), Self::Error>
     {
-        let Ok(seed) = Array::try_from(seed) else { return Err(())};
-        let ephemeral_prv = SecretKey::<C>::from_bytes(&seed).map_err(|_|())?;
+        // let Ok(seed) = Array::try_from(seed) else { return Err(())};
+        // let ephemeral_prv = SecretKey::<C>::from_bytes(&seed).map_err(|_|())?;
+        let Ok((ephemeral_prv, _ephemeral_pub)) = G::derive_keypair_from_seed(seed) else { return Err(())};
         self.encapsulate_from_key ( &ephemeral_prv )
 
         // let encoded_ephemeral_public_key = DE::encode(&ephemeral_prv.public_key());
@@ -649,7 +652,7 @@ where   //FieldBytesSize<C>: ModulusSize,
 }
 
 
-impl<C,DE> EcdhAuthEncapsulator<C,DE>
+impl<C,DE,G> EcdhAuthEncapsulator<C,DE,G>
 where   //FieldBytesSize<C>: ModulusSize,
         DE: EncodeGenericArray<PublicKey<C>> + DecodeSlice<PublicKey<C>>,
         C: CurveArithmetic + PointCompression,
@@ -684,7 +687,7 @@ where   //FieldBytesSize<C>: ModulusSize,
 
 
 
-impl<C,DE> GetSenderPublicKeyBytes for EcdhAuthEncapsulator<C,DE>
+impl<C,DE,G> GetSenderPublicKeyBytes for EcdhAuthEncapsulator<C,DE,G>
 where C: CurveArithmetic + PointCompression,
     DE: EncodeGenericArray<PublicKey<C>> + DecodeSlice<PublicKey<C>>,
 {
@@ -694,7 +697,7 @@ where C: CurveArithmetic + PointCompression,
         DE::encode(&self.sender_private.public_key())
     }
 }
-impl<C,DE> GetRecipientPublicKeyBytes for EcdhAuthEncapsulator<C,DE>
+impl<C,DE,G> GetRecipientPublicKeyBytes for EcdhAuthEncapsulator<C,DE,G>
 where C: CurveArithmetic + PointCompression,
     DE: EncodeGenericArray<PublicKey<C>> + DecodeSlice<PublicKey<C>>,
 {

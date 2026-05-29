@@ -491,12 +491,12 @@ pub mod nistsp800_56a {
 
     /// Type for party U as described in NIST SP 800-56A, 6.2.1.2 (Cofactor) One-Pass Unified Model Scheme
     //pub type EccOnePassUnifiedEncapsulator<C,K,L> = super::eckem::EcdhAuthEncapsulatorCompressed<C,K,L>;
-    pub type EccOnePassUnifiedEncapsulator<C,K,L> = KemAuthWithKdf<super::eckem::EcdhAuthEncapsulatorCompressed<C>, CombinerNoKeys, K, L>;
+    pub type EccOnePassUnifiedEncapsulator<C,K,L> = KemAuthWithKdf<super::eckem::EcdhAuthEncapsulatorCompressed<C, SeedAsScalar>, CombinerNoKeys, K, L>;
     /// Type for party V as described in NIST SP 800-56A, 6.2.1.2 (Cofactor) One-Pass Unified Model Scheme
     //pub type EccOnePassUnifiedDecapsulator<C,K,L> = super::eckem::EcdhAuthDecapsulator<C,K,L,EcUncompressedEncoder<C>>;
     pub type EccOnePassUnifiedDecapsulator<C,K,L> = KemAuthWithKdf<super::eckem::EcdhAuthDecapsulator<C,EcUncompressedEncoder<C>>, CombinerNoKeys, K,L>;
 
-    pub type EccOnePassUnifiedCapsulator<C,K,L> = KemAuthWithKdf<EcdhAuthCapsulatorCompressed<C>, CombinerNoKeys, K, L>;
+    pub type EccOnePassUnifiedCapsulator<C,K,L> = KemAuthWithKdf<EcdhAuthCapsulatorCompressed<C, SeedAsScalar>, CombinerNoKeys, K, L>;
 
     /// Type for party U as described in NIST SP 800-56A, 6.2.1.4 One-Pass MQV, C(1e, 2s, ECC MQV) Scheme
     //pub type EccOnePassMqvEncapsulator<C,K,L> = super::eckem::EcMqvAuthEncapsulatorUncompressed<C,K,L>;
@@ -534,10 +534,10 @@ pub mod ansi_x9_63 {
     pub type EccOnePassDhX963KdfKem<C,H,L> = KemWithKdf<super::eckem::EcdhKemUncompressed<C,SeedAsScalar>, CombinerNoKeys, X963Kdf<H>, L>;
     /// Type representing the 1-Pass Unified Model Scheme using the Concat KDF from X9.63, 6.5.1 
     //pub type EccOnePassUnifiedConcatKdfKem<C,H,L> = super::eckem::EcdhAuthCapsulatorCompressed<C,EcCombinerConcat<H>,L>;
-    pub type EccOnePassUnifiedConcatKdfKem<C,H,L> = KemAuthWithKdf<super::eckem::EcdhAuthCapsulatorCompressed<C>, CombinerNoKeys, ConcatKdf<H>,L>;
+    pub type EccOnePassUnifiedConcatKdfKem<C,H,L> = KemAuthWithKdf<super::eckem::EcdhAuthCapsulatorCompressed<C, SeedAsScalar>, CombinerNoKeys, ConcatKdf<H>,L>;
     /// Type representing the 1-Pass Unified Model Scheme using the X9.63 KDF from X9.63, 6.5.1 
     //pub type EccOnePassUnifiedX963KdfKem<C,H,L> = super::eckem::EcdhAuthCapsulatorCompressed<C,EcCombinerX963<H>,L>;
-    pub type EccOnePassUnifiedX963KdfKem<C,H,L> = KemAuthWithKdf<super::eckem::EcdhAuthCapsulatorCompressed<C>, CombinerNoKeys, X963Kdf<H>, L>;
+    pub type EccOnePassUnifiedX963KdfKem<C,H,L> = KemAuthWithKdf<super::eckem::EcdhAuthCapsulatorCompressed<C, SeedAsScalar>, CombinerNoKeys, X963Kdf<H>, L>;
     /// Type representing the 1-Pass MQV Scheme using the Concat KDF from X9.63, 6.9.1
     //pub type EccOnePassMqvConcatKdfKem<C,H,L> = super::eckem::EcMqvAuthCapsulatorUncompressed<C,EcCombinerConcat<H>,L>;
     pub type EccOnePassMqvConcatKdfKem<C,H,L> = KemAuthWithKdf<super::eckem::EcMqvAuthCapsulatorUncompressed<C>, CombinerNoKeys, kdfs::nistsp800_56::ConcatKdf<H>,L>;
@@ -799,7 +799,7 @@ pub mod draft_irtf_cfrg_hybrid_kems {
             crate::hybrid::ExpandSeed<super::U32, shake::Shake256>>;
  
 
-    #[cfg(all(feature="rustcrypto-ml-kem", feature="rustcrypto-p256", feature="rustcrypto-sha3"))]
+    #[cfg(all(feature="rustcrypto-ml-kem", feature="rustcrypto-p256", feature="rustcrypto-sha3", feature="rustcrypto-hmac"))]
     pub type HybridCapsulatorKitchenSinkMlKem768P256 = super::hybrid::HybridKem::<
             crate::ml_kem::MlKemWrapper<ml_kem::MlKem768>,
             super::eckem::EcdhKem<p256::NistP256, super::eckem::EcCompressedEncoder<p256::NistP256>>, 
@@ -807,7 +807,7 @@ pub mod draft_irtf_cfrg_hybrid_kems {
             //crate::hybrid::ExpandSeed<typenum::U32, kdfs::cshake::XofKdf<sha3::Shake256>>>;
             crate::hybrid::ExpandSeed<super::U32, shake::Shake256>>;
             
-    #[cfg(all(feature="rustcrypto-ml-kem", feature="rustcrypto-x25519", feature="rustcrypto-sha2", feature="rustcrypto-sha3"))]
+    #[cfg(all(feature="rustcrypto-ml-kem", feature="rustcrypto-x25519", feature="rustcrypto-sha2", feature="rustcrypto-sha3", feature="rustcrypto-hmac"))]
     pub type HybridCapsulatorKitchenSinkMlKem768X25519 = super::hybrid::HybridKem::<
             //crate::ml_kem::MlKemWithAddKeyDer<ml_kem::MlKem768>,
             crate::ml_kem::MlKemWrapper<MlKem768>,

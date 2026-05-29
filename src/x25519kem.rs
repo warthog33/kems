@@ -55,7 +55,7 @@ use crate::generic_array::typenum::Unsigned;
 
 use cipher::typenum::consts::*;
 use kdfs::hybrid_array::Array;
-use x25519_dalek::{EphemeralSecret, PublicKey, StaticSecret};
+use x25519_dalek::{PublicKey, StaticSecret};
 
 
 impl DeriveKeyPairFromSeed<StaticSecret> for SeedAsScalar 
@@ -250,11 +250,12 @@ impl<G> GetRecipientPublicKeyBytes for X25519Decapsulator<G>
 
 
 
-pub struct X25519AuthCapsulator ();
+pub struct X25519AuthCapsulator<G=SeedAsScalar> (PhantomData<G>);
 
-impl Capsulator for X25519AuthCapsulator
+impl<G> Capsulator for X25519AuthCapsulator<G>
+where G: DeriveKeyPairFromSeed<StaticSecret, PublicKey=PublicKey>
 {
-    type Encapsulator = X25519AuthEncapsulator;
+    type Encapsulator = X25519AuthEncapsulator<G>;
     type Decapsulator = X25519AuthDecapsulator;
     type CiphertextSize = U32;
     type SharedKeySize = U64;
@@ -272,31 +273,46 @@ impl Capsulator for X25519AuthCapsulator
 ///
 /// Implementation of the AuthEncapsulator for Curve X25519 using dalek-x25519
 /// 
-pub struct X25519AuthEncapsulator 
+pub struct X25519AuthEncapsulator<G>
 {
     sender_private: StaticSecret,
     recipient_public: PublicKey,
+    phantom: PhantomData<G>,
 }
 
 
-impl FromKeys for X25519AuthEncapsulator
+impl<G> FromKeys for X25519AuthEncapsulator<G>
 {
     type PrivateKey = StaticSecret;
     type PublicKey = PublicKey;
     fn from_keys ( recipient_public: Self::PublicKey, sender_private: Self::PrivateKey ) -> Self {
-        Self { sender_private, recipient_public}
+        Self { sender_private, recipient_public, phantom: PhantomData}
     }
 }
 
 
-impl Encapsulate<GenericArray<u8,U32>, Array<u8,U64>> for X25519AuthEncapsulator
+impl<G> Encapsulate<GenericArray<u8,U32>, Array<u8,U64>> for X25519AuthEncapsulator<G>
+where G: DeriveKeyPairFromSeed<StaticSecret, PublicKey=PublicKey>
 {
     type Error = ();
 
     fn encapsulate(&self, rng: &mut impl CryptoRngCore) -> Result<(GenericArray<u8,U32>, Array<u8,U64>), Self::Error> {
-        let ephem_prv = EphemeralSecret::random_from_rng(rng);
-        let ephem_pub = PublicKey::from(&ephem_prv);
+        let mut seed = Array::<u8, <Self as EncapsulateDeterministic2<GenericArray<u8,U32>, Array<u8,U64>>>::SeedSize>::default();
+        rng.fill_bytes(&mut seed);
+        self.encapsulate_deterministic(&seed)
+    }
+}
 
+impl<G> EncapsulateDeterministic2<GenericArray<u8,U32>, Array<u8,U64>> for X25519AuthEncapsulator<G>
+where G: DeriveKeyPairFromSeed<StaticSecret, PublicKey=PublicKey>
+{
+    type Error = ();
+    type SeedSize = G::SeedSize;
+    
+    fn encapsulate_deterministic(&self, seed: &[u8]) -> Result<(GenericArray<u8,U32>, Array<u8,U64>), Self::Error> {
+        if seed.len() < Self::SeedSize::USIZE { return Err(())}
+        let Ok((ephem_prv, ephem_pub)) = G::derive_keypair_from_seed(seed) else { return Err(())};
+        
         let raw_shared_secret1 = ephem_prv.diffie_hellman(&self.recipient_public);
         let raw_shared_secret2 = self.sender_private.diffie_hellman(&self.recipient_public);
 
@@ -309,7 +325,7 @@ impl Encapsulate<GenericArray<u8,U32>, Array<u8,U64>> for X25519AuthEncapsulator
     }
 }
 
-impl GetRecipientPublicKeyBytes for X25519AuthEncapsulator
+impl<G> GetRecipientPublicKeyBytes for X25519AuthEncapsulator<G>
 {
     type EncodedLen = U32;
 
@@ -318,7 +334,7 @@ impl GetRecipientPublicKeyBytes for X25519AuthEncapsulator
     }
 }
 
-impl GetSenderPublicKeyBytes for X25519AuthEncapsulator
+impl<G> GetSenderPublicKeyBytes for X25519AuthEncapsulator<G>
 {
     type EncodedLen = U32;
 

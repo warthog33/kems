@@ -2,28 +2,22 @@
 use cipher::KeyInit;
 use elliptic_curve::consts::*;
 use elliptic_curve::point::AffineCoordinates;
+use elliptic_curve::sec1::ToSec1Point;
 use hex_literal::hex;
 use kdfs::InitSalt;
 use kdfs::nistsp800_56::ConcatKdf;
 use kdfs::hybrid_array::Array;
-use kems::{Decapsulate, EncapsulateDeterministic2, Capsulator, FromKeys, SetKdf};
-use kems::eckem::{EcRawEncoder, EcUncompressedEncoder, EcdhKem, SeedAsScalar};
-//use kems::generic_array::GenericArray;
-use kems::kem_with_kdf::{CombinerNoKeys, KemWithKdf};
 
-#[cfg(feature="rustcrypto-p521")]
+use kems::{Decapsulate, EncapsulateDeterministic2, Capsulator, FromKeys, SetKdf};
+use kems::eckem::{EcRawEncoder, EcUncompressedEncoder, EcdhKem, SeedAsScalar, EcMqvAuthCapsulator};
+use kems::kem_with_kdf::{CombinerNoKeys, KemWithKdf, KemAuthWithKdf};
+    
 use p521::NistP521;
-#[cfg(feature="rustcrypto-p224")]
 use p224::NistP224;
-#[cfg(feature="rustcrypto-p256")]
 use p256::NistP256;
-#[cfg(feature="rustcrypto-p384")]
 use p384::NistP384;
-#[cfg(feature="rustcrypto-sha2")]
 use sha2::{Sha224, Sha256, Sha512};
 
-//mod common;
-//use common::PredictableRng;
 
 ///
 /// Test vector from NIST
@@ -31,10 +25,7 @@ use sha2::{Sha224, Sha256, Sha512};
 /// 
 #[test]
 #[allow(non_snake_case, unused)]
-#[cfg(all(feature="rustcrypto-sha2", feature="rustcrypto-p256"))]
 fn test_cavp_kasvs_ecdh_p256() {
-    
-
     let dsCAVS = hex!("7f73262f313adb4cca2da50a401e7d1888b07e67ec5efe0fa32be786501f4e6e");
     let QsCAVSx = hex!("8b27d83dcb54328c8282aa46055c49814b9dc68f49a4d29e723e1ecfa1d6f0cb"
     /*let QsCAVSy = hex!(*/ "995e1ec4f5dc04e407dabc434c5b0da15bf033466ae1a32fb7108db414bfd1db");
@@ -115,14 +106,9 @@ fn test_cavp_kasvs_ecdh_p256() {
 /// No Key Confirmation -> ECC OnePass MQV Scheme 
 /// 
 #[test]
-#[allow(non_snake_case, unused)]
-#[cfg(all(feature="rustcrypto-sha2", feature="rustcrypto-p384"))]
+#[allow(non_snake_case)]
 fn test_cavp_kasvs_mqv1_p384() 
 {
-    use kdfs::{misc::PassThroughKdf, nistsp800_56::ConcatKdf};
-    use kems::{Capsulator, eckem::{EcMqvAuthCapsulator}, kem_with_kdf::{AuthCombiner, CombinerAllPubKeys, CombinerNoKeys, KemAuthWithKdf}};
-
-    
     let dsCAVS = hex!("52201eb722b25b2008438dabd8f06a44648e75897ee3e2daaf02443cb5ba88a2f2a6a5a7305dcafefc815b219097ff3f");
     // let QsCAVSx = hex!("5f41110f5fd1d2417313a60b34a861eaf293d625523a7e01b0141505efafe4ce6f08753a4e73f11475743612c0b99525");
     // let QsCAVSy = hex!("c6a3ac15fc082aa5e8078f0df0e048573a0de7b7ea14c2ba67d09ae4295484eac5f7184826d3729df50e0346ef56a5ba");
@@ -131,27 +117,30 @@ fn test_cavp_kasvs_mqv1_p384()
     let deCAVS = hex!("cdbc9e095091dc320c5e2bda924874aa82578b2d3818ff46ca9e93d2d744987a0c02c9f5adca817e3a973db04ec32be8");
     let QeCAVSx = hex!("696342c35228a5ee3d04499eb7a0185453279931f360526980eeb22e6703f6ec2c2fa35631b8edb44b5dbd287734dee3");
     let QeCAVSy = hex!("a141e782af5f9593812f20ad18da1896bb859b59df0c5a2894635a66f8879542ae092b3631a17eeb9018bfa8b2c596ec");
-    let Nonce = hex!("21fd95f73f50d7c36672e385af2e2b78");
+    let _Nonce = hex!("21fd95f73f50d7c36672e385af2e2b78");
     let dsIUT = hex!("3f6b4dbbaa0ef12d45d91971690658ed98302a621e05e7fd8baf9a1bdc249fe51540bde7f2a0df999cae82f94627a6e4");
     let QsIUT = hex!("d2052f16b57444d4dd326e76824f35ad195b7c7575001f6f6d8fd91232759f197da21da4506721dd1a8887cfd098a553"
                                 "cb00ab2f26630103711786cdef397c77f33a16228bba68386f08f7fc91a44220904592a49e386f5a7ada26c779da6c8c");
     let OI = hex!("434156536964a1b2c3d4e5a6efe967d837b84d76b576a4fac9985fa091572977ac5d49b844c5c9574b42d7d9049e6b");
-    let CAVSTag = hex!("c2b9d3d280cbdb46a2490b50e91f2d21514d6a6766307c87");
+    let _CAVSTag = hex!("c2b9d3d280cbdb46a2490b50e91f2d21514d6a6766307c87");
     let Z = hex!("5b7c00844ee0b833e30c724ca74d88bed70255e88f7d9233af0a88a4806dd88e202518d5c0c5b4892fb5f6fe077e9a89");
-    let MacData = hex!("5374616e646172642054657374204d65737361676521fd95f73f50d7c36672e385af2e2b78");
+    let _MacData = hex!("5374616e646172642054657374204d65737361676521fd95f73f50d7c36672e385af2e2b78");
     let DKM = hex!("b741877d2d3a42ee098748656400a6dd6b871c526b011622");
-
 
     let dsCAVS2 = elliptic_curve::SecretKey::<NistP384>::from_bytes ( &dsCAVS.into() ).unwrap();
     let QsCAVS2 = dsCAVS2.public_key();
+    assert_eq!(QsCAVS2.to_uncompressed_point()[1..],QsCAVS);
     // Source, ds,B  Qs,B
     let dsIUT2 = elliptic_curve::SecretKey::<NistP384>::from_bytes ( &dsIUT.into() ).unwrap();
-    let QsIUT = dsIUT2.public_key();
+    let QsIUT2 = dsIUT2.public_key();
+    assert_eq!(QsIUT2.to_sec1_bytes()[1..],QsIUT);
     // Source ephmeral de,B, Qe,B
     let deCAVS2 = elliptic_curve::SecretKey::<NistP384>::from_bytes ( &deCAVS.into() ).unwrap();
-    let QeCAVS2 = deCAVS2.public_key();    
+    let QeCAVS2 = deCAVS2.public_key();
+    assert_eq!(QeCAVS2.as_affine().x(), QeCAVSx);
+    assert_eq!(QeCAVS2.as_affine().y(), QeCAVSy);
 
-    let temp_6 = kems::eckem::mqv2 ( &dsCAVS2, &deCAVS2, &QsIUT, &QsIUT);
+    let temp_6 = kems::eckem::mqv2 ( &dsCAVS2, &deCAVS2, &QsIUT2, &QsIUT2);
     assert! ( temp_6.to_affine().x() == Z);
 
     let temp_e = kems::eckem::mqv2 ( &dsIUT2, &dsIUT2, &QsCAVS2, &QeCAVS2);
@@ -177,7 +166,7 @@ fn test_cavp_kasvs_mqv1_p384()
     //let mut pred_rng = PredictableRng::new(&deCAVS);
     type MqvAuthP384ConcatSha512 = KemAuthWithKdf<EcMqvAuthCapsulator<NistP384, EcUncompressedEncoder<NistP384>>, CombinerNoKeys, ConcatKdf<Sha512>, U24>;
     //let mut encapsulator = EcMqvAuthEncapsulatorUncompressed::<_, EcCombinerConcat::<Sha512>,U24>::from_keys(QsIUT, dsCAVS2 );
-    let mut encapsulator = <MqvAuthP384ConcatSha512 as Capsulator>::Encapsulator::from_keys(QsIUT, dsCAVS2 );
+    let mut encapsulator = <MqvAuthP384ConcatSha512 as Capsulator>::Encapsulator::from_keys(QsIUT2, dsCAVS2 );
     //let kdf = EcCombinerConcat::<Sha512>::new_with_salt(&OI);
     let kdf = ConcatKdf::<Sha512>::new_with_salt(&OI);
     encapsulator.set_kdf(kdf);
@@ -203,7 +192,6 @@ fn test_cavp_kasvs_mqv1_p384()
 /// Test vector for NIST
 /// 2016/No Key Confirmation/ECC OnePass MQV Scheme/KASValidityTest_ECCOnePassMQV_KDFConcat_NOKC_init.fax
 /// 
-#[cfg(all(feature="rustcrypto-sha2", feature="rustcrypto-p521"))]
 #[test]
 #[allow(non_snake_case, unused)]
 fn test_cavp_kasvs_mqv1_p521()
@@ -295,8 +283,7 @@ fn test_cavp_kasvs_mqv1_p521()
 /// 
 #[test]
 #[allow(non_snake_case, unused)]
-#[cfg(feature="rustcrypto-p224")]
-//#[cfg(all(feature="rustcrypto-sha2", feature="rustcrypto-p224"))]
+
 fn test_cavp_kasvs_mqv1_p224() {
 
     // let dsCAVS = hex!("77ad392a6c63de03f2e9e3dbcf7e3819553bad6ec84b3e8079a041d4");
@@ -411,7 +398,6 @@ fn test_cavp_kasvs_mqv1_p224() {
 /// 
 #[test]
 #[allow(non_snake_case, unused)]
-#[cfg(all(feature="rustcrypto-sha2", feature="rustcrypto-p224"))]
 fn test_cavp_kasvs_econepass_unified_p224() {
     use kdfs::{misc::PassThroughKdf, nistsp800_56::ConcatKdf};
     use kems::{Capsulator, eckem::{EcdhAuthCapsulatorCompressed}, kem_with_kdf::{CombinerNoKeys, KemAuthWithKdf, KemWithKdf}};
@@ -464,7 +450,7 @@ fn test_cavp_kasvs_econepass_unified_p224() {
     // With new traits
     //let mut pred_rng = PredictableRng::new(&deIUT);
     //let mut encapsulator = EcdhAuthEncapsulatorCompressed::<_, EcCombinerConcat::<Sha224>,U14>::from_keys(QsCAVS2, dsIUT2, );
-    let mut encapsulator = <KemAuthWithKdf::<EcdhAuthCapsulatorCompressed<_>, CombinerNoKeys, ConcatKdf<Sha224>, U14> as Capsulator>::Encapsulator::from_keys(QsCAVS2, dsIUT2);
+    let mut encapsulator = <KemAuthWithKdf::<EcdhAuthCapsulatorCompressed<_,SeedAsScalar>, CombinerNoKeys, ConcatKdf<Sha224>, U14> as Capsulator>::Encapsulator::from_keys(QsCAVS2, dsIUT2);
     //let kdf = EcCombinerConcat::<Sha224>::new_with_salt(&OI);
     let kdf = ConcatKdf::<Sha224>::new_with_salt(&OI);
     encapsulator.set_kdf(kdf);
@@ -476,7 +462,7 @@ fn test_cavp_kasvs_econepass_unified_p224() {
     let kdf = ConcatKdf::<Sha224>::new_with_salt(&OI);
     //let mut decapsulator = EcdhDecapsulator::<_,_,U16,EcUncompressedEncoder<NistP256>>::new_with_params(dsCAVS2, kdf);
     //let mut decapsulator = EcdhAuthDecapsulator::<_,_,U14,EcCompressedEncoder<NistP224>>::from_keys(QsIUT, dsCAVS2 );
-    let mut decapsulator = <KemAuthWithKdf::<EcdhAuthCapsulatorCompressed<_>, CombinerNoKeys, ConcatKdf<Sha224>, U14> as Capsulator>::Decapsulator::from_keys(QsIUT, dsCAVS2);
+    let mut decapsulator = <KemAuthWithKdf::<EcdhAuthCapsulatorCompressed<_,SeedAsScalar>, CombinerNoKeys, ConcatKdf<Sha224>, U14> as Capsulator>::Decapsulator::from_keys(QsIUT, dsCAVS2);
     decapsulator.set_kdf(kdf);
     let k_calc2 = decapsulator.decapsulate(&c0_calc).unwrap();
     assert_eq!( k_calc2.as_slice(), DKM);
@@ -491,7 +477,6 @@ fn test_cavp_kasvs_econepass_unified_p224() {
 /// 
 #[test]
 #[allow(non_snake_case, unused)]
-#[cfg(all(feature="rustcrypto-sha2", feature="rustcrypto-p521"))]
 fn test_cavp_kasvs_econepass_unified_p521() {
     use kdfs::nistsp800_56::ConcatKdf;
     use kems::{Capsulator, nistsp800_56a::{EccOnePassUnifiedCapsulator, EccOnePassUnifiedEncapsulator}};
