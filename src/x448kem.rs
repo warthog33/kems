@@ -17,10 +17,10 @@
 //! let recipient_secret_key = StaticSecret::random_from_rng(&mut rand::rng());
 //! let recipient_public_key = PublicKey::from(&recipient_secret_key);
 //! 
-//! let encapsulator = KemWithKdf::<X448Capsulator<SeedAsScalar>, CombinerAllPubKeys, Kdf1::<Sha256>, U32>::new_encapsulator(recipient_public_key);
+//! let encapsulator = KemWithKdf::<X448Capsulator<SeedAsScalar>, CombinerAllPubKeys, Kdf1::<Sha256>, U32>::from_public_key(recipient_public_key);
 //! let (ct, k_send) = encapsulator.encapsulate(&mut OsRng).unwrap();
 //!
-//! let decapsulator = KemWithKdf::<X448Capsulator<SeedAsScalar>, CombinerAllPubKeys, Kdf1::<Sha256>, U32>::new_decapsulator(recipient_secret_key);
+//! let decapsulator = KemWithKdf::<X448Capsulator<SeedAsScalar>, CombinerAllPubKeys, Kdf1::<Sha256>, U32>::from_private_key(recipient_secret_key);
 //! let (k_recv) = decapsulator.decapsulate(&ct).unwrap();
 //! assert! ( k_send == k_recv);
 //! ```

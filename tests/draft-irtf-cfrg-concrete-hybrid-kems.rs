@@ -3,9 +3,8 @@ use hex_literal::hex;
 use kems::{Capsulator, EncapsulateDeterministic2, EncodeSeed, EncodedSizeUser2, GenerateCapsulatorFromSeed };
 
 
-
 // https://datatracker.ietf.org/doc/draft-irtf-cfrg-concrete-hybrid-kems/
-#[cfg(all(feature="rustcrypto-ml-kem", feature="rustcrypto-p256", feature="rustcrypto-sha3"))]
+
 #[test]
 fn test_a_1_1_mlkem768_p256 () 
 {
@@ -150,7 +149,6 @@ fn test_a_1_1_mlkem768_p256 ()
 
 
 // https://datatracker.ietf.org/doc/draft-irtf-cfrg-concrete-hybrid-kems/
-#[cfg(all(feature="rustcrypto-ml-kem", feature="rustcrypto-x25519", feature="rustcrypto-sha3"))]
 #[test]
 fn test_a_2_1_mlkem768_x25519 ()
 {
@@ -289,7 +287,6 @@ fn test_a_2_1_mlkem768_x25519 ()
 
 
 // https://datatracker.ietf.org/doc/draft-irtf-cfrg-concrete-hybrid-kems/
-#[cfg(all(feature="rustcrypto-ml-kem", feature="rustcrypto-p384", feature="rustcrypto-sha3"))]
 #[test]
 fn test_a_3_1_mlkem1024_p384 ()
 {

@@ -8,12 +8,7 @@
 use std::{array::TryFromSliceError, ops::{Add, Rem}};
 #[allow(unused)]
 use cipher::{BlockCipherDecrypt, BlockCipherEncrypt, typenum::Zero};
-//pub use hybrid_array::{Array, ArraySize}; //, typenum::{NonZero, Sum, consts::*}};
-
-// pub mod typenum {
-//     //pub use generic_array::typenum::{NonZero, Sum};
-//     //pub use generic_array::typenum::consts::*;
-// }
+use cipher::KeyInit;
 
 pub extern crate generic_array;
 use generic_array::{GenericArray, ArrayLength};
@@ -22,17 +17,13 @@ use generic_array::typenum::{NonZero, Sum, consts::*};
 
 pub use kdfs::hybrid_array::{Array, ArraySize};
 use kdfs::Label;
-pub use rand_core::{CryptoRngCore};
-pub use rand_core::{CryptoRng, RngCore, OsRng};
+pub use rand_core::{CryptoRngCore, CryptoRng, RngCore, OsRng};
 
 pub extern crate rand_core;
 
 pub use kem::{Encapsulate, Decapsulate};
-//pub use kem::{Encapsulator, Decapsulator};
 
 pub mod kem_with_kdf;
-
-//use crate::typenum::*;
 
 #[cfg(feature="rustcrypto-rsa")]
 pub mod rsakem;
@@ -78,6 +69,7 @@ pub trait FromKey {
     fn from_key(key: Self::Key) -> Self;
 }
 
+/// Trait used for auth decapsulators and auth encapsulators which need a private key and a public key to be specified
 pub trait FromKeys {
     type PrivateKey;
     type PublicKey;
@@ -95,26 +87,19 @@ pub trait EncapsulateDeterministic2<EK, SS> {
     fn encapsulate_deterministic(&self, seed: &[u8]) -> Result<(EK, SS), Self::Error>;
 }
 
-///
-/// Trait used to create an encapsulator passing in a kdf structure
-///
-// pub trait EncapsulatorInit<K> {
-//     fn new (kdf: K) -> Self;
-// }
-// pub trait GetPublicKey<P> {
-//     fn get_public_key (&self) -> &P;
-// }
-// pub trait GetPublicKey2<P> {
-//     fn get_public_key2 (&self) -> P;
-// }
-
+/// Trait for getting the encapsulator from a public key, this is used for the test vectors to verify that the public key encodes to the correct byte array
 pub trait GetEncapsulator {
-    type Encapsulator; //: EncodedSizeUser2;
+    /// The type of the encapsulator, this is used for the test vectors to verify that the public key encodes to the correct byte array
+    type Encapsulator;
+    /// Returns a reference to the underlying encapsulator, this is used for the test vectors to verify that the public key encodes to the correct byte array
     fn get_encapsulator(&self) -> Self::Encapsulator;
 }
 
+/// Trait for setting the KDF
 pub trait SetKdf {
+    /// The type of the KDF
     type Kdf;
+    /// Sets the KDF
     fn set_kdf(&mut self, kdf: Self::Kdf);
 }
 
@@ -151,61 +136,36 @@ pub trait EncodeGenericArray<P> {
     fn encode(source: &P) -> GenericArray<u8, Self::EncodedLen>;
 }
 
-// pub trait EncodeGenericArraySelf {
-//     type EncodedLen: ArrayLength<u8>;
-//     fn encode(&self) -> GenericArray<u8, Self::EncodedLen>;
-// }
 
-/// Inverse function which accepts a byte array and returns a public key
+/// Inverse function which accepts a variable length byte slice and returns a public key
 pub trait DecodeSlice<P> {
     type Error;
     fn decode(encoded_bytes: &[u8]) -> Result<P, Self::Error>;
 }
+
+/// Inverse function which accepts a fixed length byte array and returns a public key
 pub trait DecodeGenericArray<P> {
     type EncodedLen: ArrayLength; //<u8>;
     type Error;
     fn decode(encoded_bytes: &GenericArray<u8, Self::EncodedLen>) -> Result<P, Self::Error>;
 }
 
+/// Used for encoding a public key of the sender to a byte array
 pub trait GetSenderPublicKeyBytes {
     type EncodedLen: ArrayLength; //<u8>;
     fn get_sender_public_key_bytes(&self) -> GenericArray<u8, Self::EncodedLen>;
 }
 
+/// Used for encoding a public key of the recipient to a byte array
 pub trait GetRecipientPublicKeyBytes {
     type EncodedLen: ArrayLength; //<u8>;
     fn get_recipient_public_key_bytes(&self) -> GenericArray<u8, Self::EncodedLen>;
 }
 
-/// Used for encoding a public key to a byte array
-// pub trait EncodePublicKey2 {
-//     type EncodedLen: ArrayLength<u8>;
-//     fn get_encoded_public_key(&self) -> GenericArray<u8, Self::EncodedLen>;
-// }
-
-/// Used for encoding a public key to a byte array
-// pub trait EncodeGenericArray<P> {
-//     type EncodedLen: ArrayLength<u8>;
-//     fn encode(private_key: &P) -> GenericArray<u8, Self::EncodedLen>;
-// }
-/// Inverse function which accepts a byte array and returns a public key
-// pub trait Decode<P> {
-//     type Error;
-//     fn decode(encoded_bytes: &[u8]) -> Result<P, Self::Error>;
-// }
-
-
-/// Encode a key to a series of bytes
-// pub trait Encode {
-//     type EncodedLen: ArrayLength<u8>;
-//     fn encode(&self) -> GenericArray<u8, Self::EncodedLen>;
-//     fn decode(enc: &GenericArray<u8, Self::EncodedLen>) -> Self;
-
-// }
 
 
 
-
+/// Used for encoding a secret key to a byte array, this is used for the test vectors to verify that the private key encodes to the correct byte array
 pub trait EncodeSeed {
     /// The size of an encoded object
     type EncodedSize: ArraySize;
@@ -218,41 +178,40 @@ pub trait EncodeSeed {
 }
 
 
-
+/// Trait for encapsulators which support key wrapping, this is used for the test vectors to verify that the encapsulator can wrap a key correctly
 pub trait EncapsulateWithKeyWrap<EK,SS1, KW, SS2> : Encapsulate<EK,SS1>{
-    //type Error = Encapsulate::Error
-    //fn encapsulate_with_key_wrap() -> Result((), Error);
-    //type Error;
+    /// Size of the wrapping key
     type LW: ArraySize;
+    /// Size of the wrapped key
     type LK: ArraySize;
+    /// Encapsulates a fresh shared secret and wraps a key, the shared secret is used to derive a wrapping key which is used to wrap the key, the encapsulated key and the wrapped key are returned
     fn encapsulate_and_wrap(&self, rng: &mut impl CryptoRngCore, key: &Array<u8, Self::LK>) -> Result<(EK, Array<u8, Self::LW>), Self::Error>;
 }
+
+/// Trait for encapsulators which support deterministic key wrapping, this is used for the test vectors to verify that the encapsulator can wrap a key correctly using a deterministic seed, this is used for the test vectors to verify that the encapsulator can wrap a key correctly using a deterministic seed
 pub trait EncapsulateWithKeyWrapDeterministic<EK,SS1, KW, SS2> : EncapsulateDeterministic2<EK,SS1>{
-    //type Error = Encapsulate::Error
-    //fn encapsulate_with_key_wrap() -> Result((), Error);
-    //type Error;
+    /// Size of the wrapping key
     type LW: ArraySize;
+    /// Size of the wrapped key
     type LK: ArraySize;
-    
-    //fn encapsulate_and_wrap_deterministic(&self, seed: &Array<u8, Self::SeedSize>, key: &Array<u8, Self::LK>) -> Result<(EK, Array<u8, Self::LW>), Self::Error>;
+    /// Encapsulates a fresh shared secret and wraps a key using a deterministic seed, the shared secret is used to derive a wrapping key which is used to wrap the key, the encapsulated key and the wrapped key are returned
     fn encapsulate_and_wrap_deterministic(&self, seed: &[u8], key: &Array<u8, Self::LK>) -> Result<(EK, Array<u8, Self::LW>), Self::Error>;
 }
 
+/// Trait for decapsulators which support key unwrapping, this is used for the test vectors to verify that the decapsulator can unwrap a key correctly
 pub trait DecapsulateWithKeyWrap<EK,SS1,KW,SS2> : Decapsulate<EK,SS1>
-// where LW: ArraySize,
-//     LK: ArraySize
 {
     type Error;
+    /// Size of the wrapping key
     type LW: ArraySize;
+    /// Size of the wrapped key
     type LK: ArraySize;
-    //type Error = Encapsulate::Error
-    //fn encapsulate_with_key_wrap() -> Result((), Error);
+    /// Decapsulates a shared secret and unwraps a key, the shared secret is used to derive a wrapping key which is used to unwrap the key, the unwrapped key is returned
     fn decapsulate_and_unwrap(&self, encapsulated_key: &EK, wrapped_key: &Array<u8, Self::LW>) -> Result<Array<u8, Self::LK>, <Self as DecapsulateWithKeyWrap<EK, SS1, KW, SS2>>::Error>;
 }
 
 
 #[cfg(feature="rustcrypto-aeskw")]
-//impl<T,EK,SSL1,A,SSL> DecapsulateWithKeyWrap<EK,Array<u8, SSL1>, aes_kw::AesKw<A>, SSL> for T
 impl<T,EK,A,SSL> DecapsulateWithKeyWrap<EK,Array<u8, A::KeySize>, aes_kw::AesKw<A>, SSL> for T
 where 
     T: Decapsulate<EK,Array<u8, A::KeySize>>,
@@ -267,18 +226,11 @@ where
     
     fn decapsulate_and_unwrap(&self, encapsulated_key: &EK, wrapped_key: &Array<u8, Self::LW>) 
     -> Result<Array<u8, SSL>, <Self as DecapsulateWithKeyWrap<EK, Array<u8, A::KeySize>, aes_kw::AesKw<A>, SSL>>::Error> {
-    
-        //println! ( "SSL={}", SSL::USIZE );
-        //println! ( "LK={}", Self::LK::USIZE );
-        
+       
         let shared_secret2 = self.decapsulate(encapsulated_key).unwrap();
-        use cipher::KeyInit;
-        //let wrapping_key = aes_kw::AesKw::<A>::new_from_slice(shared_secret2.as_ref()).unwrap();
+        
         let wrapping_key = aes_kw::AesKw::<A>::new(&shared_secret2);
         let cek: Array<u8, Self::LK> = wrapping_key.unwrap_fixed_key(wrapped_key).unwrap();
-
-        //println! ( "cek={:02X?}", cek);
-        //todo!()
         Ok(cek)
     }
 }
@@ -303,37 +255,17 @@ where
         let cek: Array<u8, Self::LW> = wrapping_key.wrap_fixed_key(&key);
         Ok((ek, cek))
     }
-    
-    // fn decapsulate_and_unwrap(&self, encapsulated_key: &EK, wrapped_key: &Array<u8, Self::LW>) -> Result<Array<u8, SSL>, <Self as DecapsulateWithKeyWrap<EK, Array<u8, A::KeySize>, aes_kw::AesKw<A>, SSL>>::Error> {
-    
-    //     println! ( "SSL={}", SSL::USIZE );
-    //     println! ( "LK={}", Self::LK::USIZE );
-        
-    //     let shared_secret2 = self.decapsulate(encapsulated_key).unwrap();
-    //     use cipher::KeyInit;
-    //     //let wrapping_key = aes_kw::AesKw::<A>::new_from_slice(shared_secret2.as_ref()).unwrap();
-    //     let wrapping_key = aes_kw::AesKw::<A>::new(&shared_secret2);
-    //     let cek: Array<u8, Self::LK> = wrapping_key.unwrap_fixed_key(wrapped_key).unwrap();
-
-    //     println! ( "cek={:02X?}", cek);
-    //     //todo!()
-    //     Ok(cek)
-    // }
 }
 
 #[cfg(feature="rustcrypto-aeskw")]
 impl<T,EK,A,SSL> EncapsulateWithKeyWrapDeterministic<EK,Array<u8, A::KeySize>, aes_kw::AesKw<A>, SSL> for T
 where 
     T: EncapsulateDeterministic2<EK,Array<u8, A::KeySize>>,
-    //<T as EncapsulateDeterministic2<EK, cipher::Array<u8, <A as cipher::KeySizeUser>::KeySize>>>::Error: std::fmt::Debug,
-    //<T as EncapsulateDeterministic2<EK, Array<u8, <A::KeySize>> >>::Error: Debug,
     SSL: ArraySize + Add<U8> + NonZero + Rem<U8>,
     <SSL as Add<U8>>::Output: ArraySize,
     <SSL as Rem<U8>>::Output: Zero,
     A: BlockCipherEncrypt<BlockSize = U16> + cipher::KeyInit,
-    
 {
-    //type Error = ();
     type LW = Sum<SSL, U8>;
     type LK = SSL;
     
@@ -344,22 +276,6 @@ where
         let cek: Array<u8, Self::LW> = wrapping_key.wrap_fixed_key(&key);
         Ok((ek, cek))
     }
-    
-    // fn decapsulate_and_unwrap(&self, encapsulated_key: &EK, wrapped_key: &Array<u8, Self::LW>) -> Result<Array<u8, SSL>, <Self as DecapsulateWithKeyWrap<EK, Array<u8, A::KeySize>, aes_kw::AesKw<A>, SSL>>::Error> {
-    
-    //     println! ( "SSL={}", SSL::USIZE );
-    //     println! ( "LK={}", Self::LK::USIZE );
-        
-    //     let shared_secret2 = self.decapsulate(encapsulated_key).unwrap();
-    //     use cipher::KeyInit;
-    //     //let wrapping_key = aes_kw::AesKw::<A>::new_from_slice(shared_secret2.as_ref()).unwrap();
-    //     let wrapping_key = aes_kw::AesKw::<A>::new(&shared_secret2);
-    //     let cek: Array<u8, Self::LK> = wrapping_key.unwrap_fixed_key(wrapped_key).unwrap();
-
-    //     println! ( "cek={:02X?}", cek);
-    //     //todo!()
-    //     Ok(cek)
-    // }
 }
 
 
@@ -368,63 +284,35 @@ where
 /// Default implementations are provided for new_encapsulator and new_decapsulator
 ///
 pub trait Capsulator{
-    //type SecretKey;
     type Encapsulator: Encapsulate<GenericArray<u8, Self::CiphertextSize>, Array<u8, Self::SharedKeySize>>;
     type Decapsulator: Decapsulate<GenericArray<u8, Self::CiphertextSize>, Array<u8, Self::SharedKeySize>>;
     type SharedKeySize: ArraySize;
-    type CiphertextSize: ArrayLength; //<u8>;
-    //type EncappedKey: EncappedKey;
-   
-    // fn new_encapsulator () -> Self::Encapsulator
-    //     where Self::Encapsulator: Default
-    // {
-    //     return Self::Encapsulator::default();
-    // }
+    type CiphertextSize: ArrayLength;
 
     fn generate ( rng: &mut impl CryptoRngCore ) -> (Self::Encapsulator, Self::Decapsulator);
-    //fn generate2 ( rng: &mut impl rand_core2::CryptoRng ) -> (Self::Encapsulator, Self::Decapsulator);
 
-    fn new_encapsulator (public_key: <Self::Encapsulator as FromKey>::Key) -> Self::Encapsulator
-        //where Self::Encapsulator: From<T>
+    fn from_public_key (public_key: <Self::Encapsulator as FromKey>::Key) -> Self::Encapsulator
         where Self::Encapsulator: FromKey
     {
         return Self::Encapsulator::from_key(public_key);
     }
-    fn new_decapsulator (priv_key: <Self::Decapsulator as FromKey>::Key) -> Self::Decapsulator
-        //where Self::Decapsulator: PrivateKeyInit<T>
-        //where Self::Decapsulator: From<T>
+    fn from_private_key (priv_key: <Self::Decapsulator as FromKey>::Key) -> Self::Decapsulator
         where Self::Decapsulator: FromKey
     {
         return Self::Decapsulator::from_key(priv_key);
     }
-    
 
     fn from_bytes_encap ( bytes: &GenericArray::<u8, <Self::Encapsulator as EncodedSizeUser2>::EncodedSize> ) -> Self::Encapsulator
     where Self::Encapsulator: EncodedSizeUser2,
     {
         Self::Encapsulator::from_bytes(bytes)
     }
-    // fn from_bytes_encap ( bytes: &GenericArray::<u8, <Self::Encapsulator as DecodeGenericArray<Self::Encapsulator>>::EncodedLen> ) -> Self::Encapsulator
-    //     where Self::Encapsulator: DecodeGenericArray<Self::Encapsulator>
-    // {
-    //     let Ok(r) = <Self::Encapsulator as DecodeGenericArray<Self::Encapsulator>>::decode(bytes) else { panic! ("error in decode")};
-    //     r
-    // }
-
-
 
     fn from_bytes_decap ( bytes: &GenericArray::<u8, <Self::Decapsulator as EncodedSizeUser2>::EncodedSize> ) -> Self::Decapsulator
     where Self::Decapsulator: EncodedSizeUser2,
     {
         Self::Decapsulator::from_bytes(bytes)
     }
-    // fn from_bytes_decap ( bytes: &GenericArray::<u8, <Self::Decapsulator as DecodeGenericArray<Self::Decapsulator>>::EncodedLen> ) -> Self::Decapsulator
-    // where Self::Decapsulator: DecodeGenericArray<Self::Decapsulator>, 
-    // {
-    //     let Ok(r) = <Self::Decapsulator as DecodeGenericArray<Self::Decapsulator>>::decode(bytes) else { panic! ("error in decode")};
-    //     r
-    // }
-    
 }
 
 /// Ciphertext, a fixed size field representing the encapsulated key
@@ -432,20 +320,28 @@ pub type Ciphertext<C> = GenericArray<u8, <C as Capsulator>::CiphertextSize>;
 /// SharedKey, a fixed size type containing the shared key
 pub type SharedKey<C> = Array<u8, <C as Capsulator>::SharedKeySize>;
 
-
+/// Trait for generating an encapsulator and decapsulator from a seed, the seed is not necessarily the same size as the private key, but it should be of a fixed size
 pub trait GenerateCapsulatorFromSeed : Capsulator{
+    /// The size of the seed used to generate the encapsulator, this is not necessarily the same as the size of the private key, but it should be of a fixed size
     type SeedSize: ArraySize;
+    /// Generate a key pair from a seed, the seed is not necessarily the same size as the private key, but it should be of a fixed size
     fn derive_from_seed(seed: &Array::<u8, Self::SeedSize>) -> (Self::Encapsulator, Self::Decapsulator);
 }
 
+/// Trait for deriving a key pair from a seed, the seed is not necessarily the same size as the private key, but it should be of a fixed size
+/// <S> is a type of the resultant secret key
 pub trait DeriveKeyPairFromSeed<SK> {
+    /// The size of the seed used to derive the key pair, this is not necessarily the same as the size of the private key, but it should be of a fixed size
     type SeedSize: ArraySize;
+    /// The type of the public key
     type PublicKey;
+    /// Error type for key derivation
     type Error;
-    //fn derive_keypair_from_seed( seed: &Array::<u8, Self::SeedSize>) -> (SK, Self::PublicKey);
+    /// Derive a key pair from a seed, the seed is not necessarily the same size as the private key, but it should be of a fixed size
     fn derive_keypair_from_seed( seed: &[u8]) -> Result<(SK, Self::PublicKey), Self::Error>;
 
 }
+
 /// Seed, a fixed size type used to generate the private key
 //pub type Seed<SK,PK> = Array<u8, <S as DerivePairFromSeed>::SeedSize>;
 
@@ -472,7 +368,7 @@ pub trait DeriveKeyPairFromSeed<SK> {
 
 /// Implementation of some of the Key Encapsulation Mechanisms described in NIST SP 800-56A - DH and ECDH based
 pub mod nistsp800_56a {
-    use crate::{eckem::{EcdhAuthCapsulatorCompressed, SeedAsScalar}, kem_with_kdf::{CombinerNoKeys, KemAuthWithKdf}};
+    use crate::kem_with_kdf::{CombinerNoKeys, KemAuthWithKdf};
 
     use super::eckem::EcUncompressedEncoder;
     //use kdfs::nistsp800_56::ConcatKdf;
@@ -484,19 +380,19 @@ pub mod nistsp800_56a {
     
     /// Type for party U as described in NIST SP 800-56A, 6.2.2.2 (Cofactor) One-Pass Diffie-Hellman Scheme
     //pub type EccOnePassDhEncapsulator<C,K,L> = super::eckem::EcdhEncapsulatorUncompressed<C,K,L>;
-    pub type EccOnePassDhCapsulator<C,K,L> = KemAuthWithKdf<super::eckem::EcdhKemUncompressed<C, SeedAsScalar>, CombinerNoKeys, K, L>;
+    pub type EccOnePassDhCapsulator<C,K,L> = KemAuthWithKdf<super::eckem::EcdhKemUncompressed<C, super::eckem::SeedAsScalar>, CombinerNoKeys, K, L>;
     
     /// Type for party V as described in NIST SP 800-56A, 6.2.2.2 (Cofactor) One-Pass Diffie-Hellman Scheme
     //pub type EccOnePassDhDecapsulator<C,K,L> = super::eckem::EcdhDecapsulator<C,K,L,EcUncompressedEncoder<C>>;
 
     /// Type for party U as described in NIST SP 800-56A, 6.2.1.2 (Cofactor) One-Pass Unified Model Scheme
     //pub type EccOnePassUnifiedEncapsulator<C,K,L> = super::eckem::EcdhAuthEncapsulatorCompressed<C,K,L>;
-    pub type EccOnePassUnifiedEncapsulator<C,K,L> = KemAuthWithKdf<super::eckem::EcdhAuthEncapsulatorCompressed<C, SeedAsScalar>, CombinerNoKeys, K, L>;
+    pub type EccOnePassUnifiedEncapsulator<C,K,L> = KemAuthWithKdf<super::eckem::EcdhAuthEncapsulatorCompressed<C, super::eckem::SeedAsScalar>, CombinerNoKeys, K, L>;
     /// Type for party V as described in NIST SP 800-56A, 6.2.1.2 (Cofactor) One-Pass Unified Model Scheme
     //pub type EccOnePassUnifiedDecapsulator<C,K,L> = super::eckem::EcdhAuthDecapsulator<C,K,L,EcUncompressedEncoder<C>>;
     pub type EccOnePassUnifiedDecapsulator<C,K,L> = KemAuthWithKdf<super::eckem::EcdhAuthDecapsulator<C,EcUncompressedEncoder<C>>, CombinerNoKeys, K,L>;
 
-    pub type EccOnePassUnifiedCapsulator<C,K,L> = KemAuthWithKdf<EcdhAuthCapsulatorCompressed<C, SeedAsScalar>, CombinerNoKeys, K, L>;
+    pub type EccOnePassUnifiedCapsulator<C,K,L> = KemAuthWithKdf<super::eckem::EcdhAuthCapsulatorUncompressed<C, super::eckem::SeedAsScalar>, CombinerNoKeys, K, L>;
 
     /// Type for party U as described in NIST SP 800-56A, 6.2.1.4 One-Pass MQV, C(1e, 2s, ECC MQV) Scheme
     //pub type EccOnePassMqvEncapsulator<C,K,L> = super::eckem::EcMqvAuthEncapsulatorUncompressed<C,K,L>;
@@ -897,34 +793,12 @@ pub mod apple_hpke {
 #[cfg(all(feature="rustcrypto-ml-kem"))]
 pub mod draft_ietf_lamps_pq_composite_kem_07
 {
-    #[cfg(all(feature="rustcrypto-ml-kem"))]
     use crate::ml_kem::MlKemWrapper;
-    //use crate::hybrid::{QsfCombiner, SplitSeed};
-    
-    use cipher::consts::{B0, B1, U32, U256, U384, U512};
+    use cipher::consts::{B0, B1, U32, U384, U512};
     use cipher::typenum::{UInt, UTerm};
-    //use hex_literal::hex;
-    //use hybrid_array2::sizes::{U1792};
-    // use typenum::U64;
-    // use crate::hybrid::HybridKem;
-    // #[cfg(feature="rustcrypto-ml-kem")]
-    // use ml_kem::{MlKem768, MlKem1024};
-    // use crate::eckem::{EcCombinerNoPubKeys, EcUncompressedEncoder, EcdhKem, SeedAsScalar};
-    // use kdfs::misc::PassThroughKdf;
-    //use kdfs::rfc5869_hkdf::HkdfExtract;
-    
-    // #[cfg(feature="rustcrypto-p256")]
-    // use p256::NistP256;
-    // #[cfg(feature="rustcrypto-p384")]
-    // use p384::NistP384;
-    // #[cfg(feature="rustcrypto-p521")]
-    // use p521::NistP521;
-    // use kdfs::iso11770_6::Okdf3;
-    // use kdfs::u0;
     
     #[cfg(all(feature="rustcrypto-ml-kem", feature="rustcrypto-x25519", feature="rustcrypto-sha3"))]
     pub type HybridKemMlKem768X25519Sha3_256 = crate::hybrid::HybridKem::<MlKemWrapper<ml_kem::MlKem768>,
-        //crate::x25519kem::X25519Capsulator<crate::eckem::EcCombinerNoPubKeys<kdfs::misc::PassThroughKdf>, digest::consts::U32, crate::eckem::SeedAsScalar>,
         crate::x25519kem::X25519Capsulator<crate::eckem::SeedAsScalar>,
         crate::hybrid::QsfCombiner<kdfs::iso11770_6::Okdf3::<sha3::Sha3_256, kdfs::u0>,LabelMlKey768X25519Sha3_256>, U32>;
 
@@ -969,7 +843,7 @@ pub mod draft_ietf_lamps_pq_composite_kem_07
     pub type HybridKemMlkem768Rsa2048HmacSha256 = crate::hybrid::HybridKem::<crate::ml_kem::MlKemWrapper<ml_kem::MlKem768>,
         //crate::rsakem::RsaOaepKem2<U256,typenum::U32,sha2_old::Sha256,sha2_old::Sha256,U1218>,
         //crate::rsakem::RsaOaepKem2<U256,typenum::U32,sha2_old::Sha256,sha2_old::Sha256>,
-        crate::rsakem::RsaOaepKem2<U256,super::U32,sha2::Sha256,sha2::Sha256>,
+        crate::rsakem::RsaOaepKem2<cipher::consts::U256,super::U32,sha2::Sha256,sha2::Sha256>,
         //crate::hybrid::QsfCombiner<kdfs::rfc5869_hkdf::HkdfExtract<hmac::HmacReset<sha2::Sha256>>, LabelMlKey768Rsa2048HmacSha256>, typenum::U32>;
          crate::hybrid::QsfCombiner<kdfs::iso11770_6::Okdf3::<sha3::Sha3_256, kdfs::u0>, LabelMlKey768Rsa2048HmacSha256>, U32>;
 

@@ -25,11 +25,11 @@
 //! 
 //! type EcdhX963Sha256<C> = KemWithKdf<EcdhKemCompressed2<C>, CombinerNoKeys, X963KdfSha256, U32>;
 //! //let encapsulator = EcdhEncapsulatorCompressed::<_,EcCombinerX963<Sha256>,U32>::from_key(recipient_public_key);
-//! let encapsulator = EcdhX963Sha256::new_encapsulator(recipient_public_key);
+//! let encapsulator = EcdhX963Sha256::from_public_key(recipient_public_key);
 //! let (ct, k_send) = encapsulator.encapsulate(&mut OsRng).unwrap();
 //! 
 //! //let decapsulator = EcdhDecapsulatorCompressed::<_,EcCombinerX963<Sha256>,U32>::from_key(recipient_secret_key);
-//! let decapsulator = EcdhX963Sha256::new_decapsulator(recipient_secret_key);
+//! let decapsulator = EcdhX963Sha256::from_private_key(recipient_secret_key);
 //! let k_recv = decapsulator.decapsulate(&ct).unwrap();
 //! assert! ( k_send == k_recv);
 //! ```
@@ -46,7 +46,7 @@ use cipher::typenum::{Diff, Quot, Sum};
 use elliptic_curve::{AffinePoint, Curve, CurveArithmetic, FieldBytesEncoding, FieldBytesSize, Generate, NonZeroScalar, PrimeCurve, ProjectivePoint, PublicKey, Scalar, ScalarValue, SecretKey};
 use elliptic_curve::sec1::{CompressedPointSize, FromSec1Point, ModulusSize, Sec1Point, ToSec1Point, UncompressedPointSize};
 #[allow(unused)]
-use elliptic_curve::point::{AffineCoordinates, PointCompression};
+use elliptic_curve::point::{AffineCoordinates, PointCompression,DecompactPoint};
 #[allow(unused)]
 use elliptic_curve::bigint::ArrayEncoding;
 use generic_array::{ArrayLength, GenericArray};
@@ -55,7 +55,6 @@ use kdfs::hybrid_array::{Array, ArraySize};
 
 use crate::{Capsulator, CryptoRngCore, Decapsulate, DecodeSlice, DeriveKeyPairFromSeed, Encapsulate, EncapsulateDeterministic2, EncodeGenericArray, EncodeHybridArray};
 use crate::{EncodedSizeUser2, FromKey, FromKeys, GenerateCapsulatorFromSeed, GetRecipientPublicKeyBytes, GetSenderPublicKeyBytes};
-
 
 #[cfg(feature="rustcrypto-p256")]
 use p256::NistP256;
@@ -98,6 +97,29 @@ impl<C: CurveArithmetic> EncodeHybridArray<AffinePoint<C>> for EcXonlyEncoder<C>
 
     fn encode ( point: &AffinePoint<C> ) -> Array<u8, Self::EncodedLen> {
         point.x()
+    }
+}
+impl<C> DecodeSlice<PublicKey<C>> for EcXonlyEncoder<C>
+where C: CurveArithmetic,
+    C::FieldBytesSize: ModulusSize,
+    C::AffinePoint: DecompactPoint<C>
+{
+    type Error = elliptic_curve::Error;
+    fn decode(encoded_bytes: &[u8]) -> Result<PublicKey<C>, Self::Error> {
+        let point = AffinePoint::<C>::decompact(encoded_bytes.try_into().unwrap()).unwrap();
+        PublicKey::<C>::from_affine(point)
+    }
+}
+
+impl<C> EncodeGenericArray<PublicKey<C>> for EcXonlyEncoder<C>
+where   C: CurveArithmetic + PointCompression, 
+        C::AffinePoint: FromSec1Point<C> + ToSec1Point<C>,
+        C::FieldBytesSize: ModulusSize + ArrayLength,
+        <C::FieldBytesSize as ModulusSize>::CompressedPointSize: ArrayLength, //<u8>,
+{
+    type EncodedLen = C::FieldBytesSize;
+    fn encode(public_key: &PublicKey<C>) -> GenericArray<u8, Self::EncodedLen> {
+        public_key.as_affine().x().try_into().unwrap()
     }
 }
 
@@ -535,6 +557,8 @@ where DE: EncodeGenericArray<PublicKey<C>> + DecodeSlice<PublicKey<C>> + DecodeS
 pub type EcdhAuthCapsulatorCompressed<C,G> = EcdhAuthCapsulator<C, EcCompressedEncoder<C>, G>;
 /// Authenticated KEM based upon Elliptic Curve Diffie Hellman with SEC1 uncompressed encoding of the ciphertext
 pub type EcdhAuthCapsulatorUncompressed<C,G> = EcdhAuthCapsulator<C, EcUncompressedEncoder<C>,G>;
+
+pub type EcdhAuthCapsulatorRaw<C,G> = EcdhAuthCapsulator<C, EcRawEncoder<C>,G>;
 
 
 
@@ -1210,7 +1234,8 @@ pub type EcdhKemCompressed2<C> = EcdhKem<C, EcCompressedEncoder<C>, SeedAsScalar
 /// Unauthenticated KEM using elliptic curve diffie Hellman and SEC1 uncompressed encoding of the ciphertext
 pub type EcdhKemUncompressed<C,G> = EcdhKem<C, EcUncompressedEncoder<C>, G, EcXonlyEncoder<C>>;
 
-
+/// Unauthenticated KEM using elliptic curve diffie Hellman and x-only encoding of the ciphertext
+pub type EcdhKemCompact<C,G> = EcdhKem<C, EcXonlyEncoder<C>, G, EcXonlyEncoder<C>>;
 
 impl<C, DE,G, S> Capsulator for EcdhKem<C,DE,G, S>
 where 

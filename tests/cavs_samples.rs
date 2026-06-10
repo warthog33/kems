@@ -3,13 +3,16 @@ use cipher::KeyInit;
 use elliptic_curve::consts::*;
 use elliptic_curve::point::AffineCoordinates;
 use elliptic_curve::sec1::ToSec1Point;
+
 use hex_literal::hex;
+use hmac::Mac;
 use kdfs::InitSalt;
 use kdfs::nistsp800_56::ConcatKdf;
 use kdfs::hybrid_array::Array;
 
+use kems::nistsp800_56a::EccOnePassUnifiedCapsulator;
 use kems::{Decapsulate, EncapsulateDeterministic2, Capsulator, FromKeys, SetKdf};
-use kems::eckem::{EcRawEncoder, EcUncompressedEncoder, EcdhKem, SeedAsScalar, EcMqvAuthCapsulator};
+use kems::eckem::{EcMqvAuthCapsulator, EcRawEncoder, EcUncompressedEncoder, EcdhAuthCapsulatorCompressed, EcdhKem, SeedAsScalar};
 use kems::kem_with_kdf::{CombinerNoKeys, KemWithKdf, KemAuthWithKdf};
     
 use p521::NistP521;
@@ -24,79 +27,49 @@ use sha2::{Sha224, Sha256, Sha512};
 /// 2016/No Key Confirmation/ECC OnePassDH Unified Scheme/KASValidityTest_ECCOnePassDH_KDFConcat_NOKC_init.fax
 /// 
 #[test]
-#[allow(non_snake_case, unused)]
+#[allow(non_snake_case)]
 fn test_cavp_kasvs_ecdh_p256() {
     let dsCAVS = hex!("7f73262f313adb4cca2da50a401e7d1888b07e67ec5efe0fa32be786501f4e6e");
-    let QsCAVSx = hex!("8b27d83dcb54328c8282aa46055c49814b9dc68f49a4d29e723e1ecfa1d6f0cb"
-    /*let QsCAVSy = hex!(*/ "995e1ec4f5dc04e407dabc434c5b0da15bf033466ae1a32fb7108db414bfd1db");
-    let Nonce = hex!("41dc5444dc8c0821a073f4af3728aa50");
+    let QsCAVSx = hex!("8b27d83dcb54328c8282aa46055c49814b9dc68f49a4d29e723e1ecfa1d6f0cb");
+    let QsCAVSy = hex!("995e1ec4f5dc04e407dabc434c5b0da15bf033466ae1a32fb7108db414bfd1db");
+    let QsCAVS = hex!("8b27d83dcb54328c8282aa46055c49814b9dc68f49a4d29e723e1ecfa1d6f0cb995e1ec4f5dc04e407dabc434c5b0da15bf033466ae1a32fb7108db414bfd1db");
+    let _Nonce = hex!("41dc5444dc8c0821a073f4af3728aa50");
     let deIUT = hex!("377eec0e61dd4793221f5bc2707a7a925dc99238ddd7789680499c417481cc65");
     let QeIUTx = hex!("5e593cabc3df8644bd51190fc0e44f49dc550441626a6448f4879005a37bb647");
     let QeIUTy = hex!("92843ce9bc510348e73a7665d4c8829a7811c4bcdf357f237e7391b7e1028206");
     let OI = hex!("a1b2c3d4e54341565369645ff2a7ecdff74a2edbf3c0c951ff92b5a401d73e40c9f8b87c59b76ec48370dbf7ba9e1d");
-    let CAVSTag = hex!("146fbc2b8f18d95e");
-    let Z = hex!("1f951cb28f32c293650e7c29744630cba92b62be1d094df41d6b529e854b843e");
-    let MacData = hex!("5374616e646172642054657374204d65737361676541dc5444dc8c0821a073f4af3728aa50");
+    let _CAVSTag = hex!("146fbc2b8f18d95e");
+    let _Z = hex!("1f951cb28f32c293650e7c29744630cba92b62be1d094df41d6b529e854b843e");
+    let _MacData = hex!("5374616e646172642054657374204d65737361676541dc5444dc8c0821a073f4af3728aa50");
     let DKM = hex!("0b4aa3215a8bbee3946949aede77eb18");
 
     let dsCAVS2 = elliptic_curve::SecretKey::<NistP256>::from_bytes ( &dsCAVS.into() ).unwrap();
     let QsCAVS2 = dsCAVS2.public_key();
-    //assert! ( QsCAVS2.as_affine().x() == QsCAVSx.into());
+    assert! ( QsCAVS2.as_affine().x() == QsCAVSx);
+    assert! ( QsCAVS2.as_affine().y() == QsCAVSy);
     
     let deIUT2 = elliptic_curve::SecretKey::<NistP256>::from_bytes ( &deIUT.into() ).unwrap();
     let QeIUT = deIUT2.public_key();
     assert! ( QeIUT.as_affine().x() == QeIUTx);
-
-    // let kdf = EcCombinerConcat::<Sha256>::new_with_salt(&OI);
-        
-    // let encapsulator = EcdhEncapsulatorUncompressed::new(kdf);
-    
-    // let mut pred_rng = PredictableRng::new(&deIUT);
-    // let (c0_calc, k_calc ) = encapsulator.try_encap(&mut pred_rng, &QsCAVS2).unwrap();
-    // assert! ( k_calc.as_bytes() == DKM);
-
-    // let kdf = EcCombinerConcat::<Sha256>::new_with_salt(&OI);
-    // let decapsulator = EcdhDecapsulator::<_,_,U16,_>::new_with_params(dsCAVS2.clone(), kdf);
-
-    // let k_calc2 = decapsulator.try_decap(&c0_calc).unwrap();
-    // assert! ( k_calc2.as_bytes() == DKM); 
-
-    // let k_cal3 = decapsulator.decapsulate(&Array::try_from(c0_calc.as_ref()).unwrap()).unwrap();
-    // assert_eq! ( k_cal3, DKM);
-
-    //
-    //let mut pred_rng = PredictableRng::new(&deIUT);
-    //let mut encapsulator = EcdhEncapsulatorRaw::<_, EcCombinerConcat::<Sha256>,U16>::from(QsCAVS2);
-    // let QsCAVSx3: Array<u8, U32> = QsCAVSx.into();
-    // let QsCAVSy3: Array<u8, U32> = QsCAVSy.into();
-    //let QsCAVS3 = QsCAVSx3.concat(QsCAVSy3);
-    //let mut encapsulator = EcdhEncapsulatorRaw::<NistP256, EcCombinerConcat::<Sha256>,U16>::from_bytes(&QsCAVSx3.concat(QsCAVSy3));
-    //let mut encapsulator = EcdhEncapsulatorRaw::<NistP256, EcCombinerConcat::<Sha256>,U16>::from_bytes(&QsCAVSx.into());
+    assert! ( QeIUT.as_affine().y() == QeIUTy);
 
     type Kem = KemWithKdf::<EcdhKem::<NistP256, EcRawEncoder<NistP256>, SeedAsScalar>, CombinerNoKeys, ConcatKdf<Sha256>, U16>;
-    let mut encapsulator = Kem::from_bytes_encap(&QsCAVSx.into());
+    let mut encapsulator = Kem::from_bytes_encap(&QsCAVS.into());
+    encapsulator.set_kdf(ConcatKdf::<Sha256>::new_with_salt(&OI));
 
-    //let kdf = EcCombinerConcat::<Sha256>::new_with_salt(&OI);
-    let kdf = ConcatKdf::<Sha256>::new_with_salt(&OI);
-    encapsulator.set_kdf(kdf);
-    //let (c0_calc, k_calc) = Encapsulate::<GenericArray<_,_>, Array<_,_>>::encapsulate(&encapsulator, &mut pred_rng).unwrap();
     let (c0_calc, k_calc) = encapsulator.encapsulate_deterministic (&deIUT).unwrap();
-
     assert_eq!( c0_calc[..32], QeIUTx );
-
+    assert_eq!( c0_calc[32..], QeIUTy );
     assert_eq!( k_calc.as_slice(), DKM);
 
-    //let kdf = EcCombinerConcat::<Sha256>::new_with_salt(&OI);
-    let kdf = ConcatKdf::<Sha256>::new_with_salt(&OI);
-    //let mut decapsulator = EcdhDecapsulator::<_,_,U16,EcUncompressedEncoder<NistP256>>::new_with_params(dsCAVS2, kdf);
-    //let mut decapsulator = EcdhDecapsulator::<_,_,U16,EcUncompressedEncoder<NistP256>>::from(dsCAVS2);
-    //let mut decapsulator = EcdhDecapsulator::<_,_,U16,EcRawEncoder<NistP256>>::from_bytes(&dsCAVS.into());
     let mut decapsulator = Kem::from_bytes_decap(&dsCAVS.into());
-    decapsulator.set_kdf(kdf);
+    decapsulator.set_kdf(ConcatKdf::<Sha256>::new_with_salt(&OI));
     let k_calc2 = decapsulator.decapsulate(&c0_calc).unwrap();
     assert_eq!( k_calc2.as_slice(), DKM);
 
-
+    // let mut hmac = <hmac::Hmac::<sha2::Sha512> as KeyInit>::new_from_slice(k_calc2.as_slice()).unwrap();
+    // hmac.update(&MacData);
+    // assert_eq! ( hmac.verify_truncated_left(&CAVSTag), Ok(()));
 }
 
 
@@ -110,8 +83,8 @@ fn test_cavp_kasvs_ecdh_p256() {
 fn test_cavp_kasvs_mqv1_p384() 
 {
     let dsCAVS = hex!("52201eb722b25b2008438dabd8f06a44648e75897ee3e2daaf02443cb5ba88a2f2a6a5a7305dcafefc815b219097ff3f");
-    // let QsCAVSx = hex!("5f41110f5fd1d2417313a60b34a861eaf293d625523a7e01b0141505efafe4ce6f08753a4e73f11475743612c0b99525");
-    // let QsCAVSy = hex!("c6a3ac15fc082aa5e8078f0df0e048573a0de7b7ea14c2ba67d09ae4295484eac5f7184826d3729df50e0346ef56a5ba");
+    let QsCAVSx = hex!("5f41110f5fd1d2417313a60b34a861eaf293d625523a7e01b0141505efafe4ce6f08753a4e73f11475743612c0b99525");
+    let QsCAVSy = hex!("c6a3ac15fc082aa5e8078f0df0e048573a0de7b7ea14c2ba67d09ae4295484eac5f7184826d3729df50e0346ef56a5ba");
     let QsCAVS = hex!("5f41110f5fd1d2417313a60b34a861eaf293d625523a7e01b0141505efafe4ce6f08753a4e73f11475743612c0b99525"
                                 "c6a3ac15fc082aa5e8078f0df0e048573a0de7b7ea14c2ba67d09ae4295484eac5f7184826d3729df50e0346ef56a5ba");
     let deCAVS = hex!("cdbc9e095091dc320c5e2bda924874aa82578b2d3818ff46ca9e93d2d744987a0c02c9f5adca817e3a973db04ec32be8");
@@ -129,6 +102,8 @@ fn test_cavp_kasvs_mqv1_p384()
 
     let dsCAVS2 = elliptic_curve::SecretKey::<NistP384>::from_bytes ( &dsCAVS.into() ).unwrap();
     let QsCAVS2 = dsCAVS2.public_key();
+    assert_eq!(QsCAVS2.as_affine().x(),QsCAVSx);
+    assert_eq!(QsCAVS2.as_affine().y(),QsCAVSy);
     assert_eq!(QsCAVS2.to_uncompressed_point()[1..],QsCAVS);
     // Source, ds,B  Qs,B
     let dsIUT2 = elliptic_curve::SecretKey::<NistP384>::from_bytes ( &dsIUT.into() ).unwrap();
@@ -146,43 +121,26 @@ fn test_cavp_kasvs_mqv1_p384()
     let temp_e = kems::eckem::mqv2 ( &dsIUT2, &dsIUT2, &QsCAVS2, &QeCAVS2);
     assert!( temp_e.to_affine().x() == Z);
 
-    // Repeat using KEM
-    // let kdf = EcCombinerConcat::<Sha512>::new_with_salt(&OI);
-    // let encapsulator = EcMqvAuthEncapsulatorUncompressed::new(kdf, dsCAVS2.clone());
-
-    // let mut pred_rng = PredictableRng::new(&deCAVS);
-    // let (c0_calc, k_calc ) = encapsulator.try_encap(&mut pred_rng, &QsIUT).unwrap();
-
-    // assert! ( k_calc.as_bytes() == &DKM );
-
-    // let kdf = EcCombinerConcat::<Sha512>::new_with_salt(&OI);
-    // let decapsulator = EcMqvAuthDecapsulator::<_,_,U24,EcUncompressedEncoder<NistP384>>::new_with_params(dsIUT2.clone(), kdf);
-
-    // let k_calc2 = decapsulator.try_auth_decap(&c0_calc, &QsCAVS2).unwrap();
-    // assert! ( k_calc2.as_bytes() == &DKM);
-
-
     // With new traits
-    //let mut pred_rng = PredictableRng::new(&deCAVS);
     type MqvAuthP384ConcatSha512 = KemAuthWithKdf<EcMqvAuthCapsulator<NistP384, EcUncompressedEncoder<NistP384>>, CombinerNoKeys, ConcatKdf<Sha512>, U24>;
-    //let mut encapsulator = EcMqvAuthEncapsulatorUncompressed::<_, EcCombinerConcat::<Sha512>,U24>::from_keys(QsIUT, dsCAVS2 );
+
     let mut encapsulator = <MqvAuthP384ConcatSha512 as Capsulator>::Encapsulator::from_keys(QsIUT2, dsCAVS2 );
-    //let kdf = EcCombinerConcat::<Sha512>::new_with_salt(&OI);
     let kdf = ConcatKdf::<Sha512>::new_with_salt(&OI);
     encapsulator.set_kdf(kdf);
-    //let (c0_calc, k_calc) = encapsulator.encapsulate(&mut pred_rng).unwrap();
     let (c0_calc, k_calc) = encapsulator.encapsulate_deterministic(&deCAVS).unwrap();
 
     assert_eq!( k_calc.as_slice(), DKM);
 
-    //let kdf = EcCombinerConcat::<Sha512>::new_with_salt(&OI);
     let kdf = ConcatKdf::<Sha512>::new_with_salt(&OI);
-    //let mut decapsulator = EcdhDecapsulator::<_,_,U16,EcUncompressedEncoder<NistP256>>::new_with_params(dsCAVS2, kdf);
-    //let mut decapsulator = EcMqvAuthDecapsulator::<_,EcUncompressedEncoder<NistP384>>::from_keys(QsCAVS2, dsIUT2,  );
+
     let mut decapsulator = <MqvAuthP384ConcatSha512 as Capsulator>::Decapsulator::from_keys(QsCAVS2, dsIUT2 );
     decapsulator.set_kdf(kdf);
     let k_calc2 = decapsulator.decapsulate(&c0_calc).unwrap();
     assert_eq!( k_calc2.as_slice(), DKM);
+
+    // let mut hmac = <hmac::Hmac::<sha2::Sha384> as KeyInit>::new_from_slice(k_calc2.as_slice()).unwrap();
+    // hmac.update(&MacData);
+    // assert_eq! ( hmac.verify_truncated_left(&CAVSTag), Ok(()));
 
 }
 
@@ -196,9 +154,6 @@ fn test_cavp_kasvs_mqv1_p384()
 #[allow(non_snake_case, unused)]
 fn test_cavp_kasvs_mqv1_p521()
 {
-    use kdfs::nistsp800_56::ConcatKdf;
-    use kems::{Capsulator, eckem::EcMqvAuthCapsulator, kem_with_kdf::{CombinerNoKeys, KemAuthWithKdf}};
-
     let dsCAVS = hex!("00000171b889127a383ffad39982e3b0e604cc5613471b1fa5efd396dd76b38562dcaa5686c3cfbc98b32d990a1eeda768d80aacf8de8584e93737d927cdfb19fa26f2be");
     let QsCAVSx = hex!("000001e8c21466ca2920eb18cbbd7224e6031d8f92a539873d90af1f1db94473cf8ed83d2960b53d46c9dddabdaec361a15f712e63fd43ebe4e89adbf29b4e5aeabbeafb");
     let QsCAVSy = hex!("00000148afea19d479fd8b4bc555f3bf14c2acf8826ea5d328901cc4a1c53f1643254c37d83a1e057ec412db5b396a83933b1f33e826cdf37817c947eb628bbc5b036748");
@@ -233,46 +188,21 @@ fn test_cavp_kasvs_mqv1_p521()
     let z_calc = kems::eckem::mqv2 ( &dsCAVS2, &dsCAVS2, &QsIUT, &QeIUT);
     assert_eq! ( z_calc.to_affine().x().as_slice(), &Z );
 
-    // Test using EciesEncapsulator
-    // let kdf = EcCombinerConcat::<Sha512>::new_with_salt(&OI);
-    
-    // let encapsulator = EcMqvAuthEncapsulatorCompressed::<_,_,U32>::new(kdf, dsIUT2.clone());
-
-    // let mut pred_rng = PredictableRng::new(&deIUT[2..]);
-    // let (c0_calc, k_calc ) = encapsulator.try_encap(&mut pred_rng, &QsCAVS2).unwrap();
-
-    // assert! ( k_calc.as_bytes() == DKM);
-
-    // let kdf = EcCombinerConcat::<Sha512>::new_with_salt(&OI);
-    // let decapsulator = EcMqvAuthDecapsulator::<_,_,U32,EcCompressedEncoder<NistP521>>::new_with_params(dsCAVS2.clone(), kdf);
-
-    // let k_calc2 = decapsulator.try_auth_decap(&c0_calc, &QsIUT).unwrap();
-    // assert! ( k_calc2.as_bytes() == DKM);
-
     type MqvAuthP521ConcatSha512 = KemAuthWithKdf<EcMqvAuthCapsulator<NistP521, EcUncompressedEncoder<NistP521>>, CombinerNoKeys, ConcatKdf<Sha512>, U32>;
 
-    // With new traits
-    //let mut pred_rng = PredictableRng::new(&deIUT[2..]);
-
-    //let mut encapsulator = EcMqvAuthEncapsulatorCompressed::<_, EcCombinerConcat::<Sha512>,U32>::from_keys(QsCAVS2, dsIUT2 );
     let mut encapsulator = <MqvAuthP521ConcatSha512 as Capsulator>::Encapsulator::from_keys(QsCAVS2, dsIUT2);
-    //let kdf = EcCombinerConcat::<Sha512>::new_with_salt(&OI);
-    let kdf = ConcatKdf::<Sha512>::new_with_salt(&OI);
-    encapsulator.set_kdf(kdf);
-    //let (c0_calc, k_calc) = encapsulator.encapsulate(&mut pred_rng).unwrap();
+    encapsulator.set_kdf(ConcatKdf::<Sha512>::new_with_salt(&OI));
     let (c0_calc, k_calc) = encapsulator.encapsulate_deterministic(&deIUT[2..]).unwrap();
-
     assert_eq!( k_calc.as_slice(), DKM);
 
-    //let kdf = EcCombinerConcat::<Sha512>::new_with_salt(&OI);
-    let kdf = ConcatKdf::<Sha512>::new_with_salt(&OI);
-    //let mut decapsulator = EcdhDecapsulator::<_,_,U16,EcUncompressedEncoder<NistP256>>::new_with_params(dsCAVS2, kdf);
-    //let mut decapsulator = EcMqvAuthDecapsulator::<_,_,U32,EcCompressedEncoder<NistP521>>::from_keys(QsIUT, dsCAVS2 );
     let mut decapsulator = <MqvAuthP521ConcatSha512 as Capsulator>::Decapsulator::from_keys(QsIUT, dsCAVS2);
-    decapsulator.set_kdf(kdf);
+    decapsulator.set_kdf(ConcatKdf::<Sha512>::new_with_salt(&OI));
     let k_calc2 = decapsulator.decapsulate(&c0_calc).unwrap();
     assert_eq!( k_calc2.as_slice(), DKM);
 
+    let mut hmac = <hmac::Hmac::<sha2::Sha512> as KeyInit>::new_from_slice(k_calc2.as_slice()).unwrap();
+    hmac.update(&MacData);
+    assert_eq! ( hmac.verify_truncated_left(&CAVSTag), Ok(()));
 }
 
 
@@ -282,35 +212,13 @@ fn test_cavp_kasvs_mqv1_p521()
 /// No Key Confirmation/ECC OnePass MQV Scheme/KASValidityTest_ECCOnePassMQV_KDFConcat_NOKC_init.fax
 /// 
 #[test]
-#[allow(non_snake_case, unused)]
+#[allow(non_snake_case)]
 
 fn test_cavp_kasvs_mqv1_p224() {
-
-    // let dsCAVS = hex!("77ad392a6c63de03f2e9e3dbcf7e3819553bad6ec84b3e8079a041d4");
-    // let QsCAVSx = hex!("4bfbaf6f8e12147b4dcaa3e83e5761189a0602f8e30a5b450243c5a8");
-    // let QsCAVSy = hex!("d6d24488f78103dafd2fbba3d504643d413b8d7135fe73bac493a810");
-    // let Nonce = hex!("82c64168ddade4bf5cec39c76b87473f");
-    // let dsIUT = hex!("edc297a9f1a63f4f5eb7592ebd25b37accf7c27672d57589a5c94087");
-    // let QsIUTx = hex!("3ec153983dd334f37ccd8b19400115665ecf35cc69148ea4c170e3f8");
-    // let QsIUTy = hex!("9bc93bfb9211ae474d3d23d21db5fd544d3b6ba0958e704638bfe51e");
-    // let deIUT = hex!("64f329c556379de8806e351f9acd9f947669e248cc99740167db11bc");
-    // let QeIUTx = hex!("0e028efc384acb1234473610b7e2910a06399796786568163ddaf061");
-    // let QeIUTy = hex!("bfb0ba00d0c7cde42566cdc556492e90fcdb8ad665a9c67cc25c7730");
-    // let OI = hex!("a1b2c3d4e543415653696490ed2e8f6d803286be2d8e956fbe2b0b641ba624ba78b1db4fcdb6ff8486be89417c922d");
-    // let CAVSTag = hex!("03909e0e807d743f");
-    // let Z = hex!("c5206bbe2727a865975c0fd1cea086d76121d2cd9e421c70dac5fe5c");
-    // let MacData = hex!("5574616e646172642054657374204d65737361676582c64168ddade4bf5cec39c76b87473f");
-    // let DKM = hex!("569ab0898db5d6653a669226dbdc");
-
-    use elliptic_curve::sec1::ToSec1Point;
-    use hmac::Mac;
-    use kdfs::nistsp800_56::ConcatKdf;
-    use kems::{Capsulator, eckem::EcMqvAuthCapsulator, kem_with_kdf::{CombinerNoKeys, KemAuthWithKdf}};
-
     let dsCAVS = hex!("ab5d7bf269ee2eefa6a3ec1dba12263530ae3b10310b5bdf9173dac6");
     let QsCAVSx = hex!("b39d3ac3641cfe283ed112dab048729ee74da099bddbad2d4ab150cb");
     let QsCAVSy = hex!("3bbf4310380ad82d8b2feae0fe9d9b255c4651631450761e0b42b6cd");
-    let Nonce = hex!("1e4185a1c17ab6bbaf391bea4b2745ca");
+    let _Nonce = hex!("1e4185a1c17ab6bbaf391bea4b2745ca");
     let dsIUT = hex!("35fea0d4eee8cb0a1a8f08b53b93f76874aba803e3f77c50b725dc82");
     let QsIUTx = hex!("0e63a5b7303549028611852c405281ca298133cec53fc3a4d430762e");
     let QsIUTy = hex!("7a3c6bd690b5d59a9544d09a7d5825e68bf968fe4480120c04d0789b");
@@ -319,7 +227,7 @@ fn test_cavp_kasvs_mqv1_p224() {
     let QeIUTy = hex!("ede0c10f998d3f787bfa8ed563aad3c45603e3f46a123e61258e38e9");
     let OI = hex!("a1b2c3d4e54341565369642609f5a5ab04a5ee00b5c63576b7d50c235b2f70e29c31599a559d90c4b13fc127e3d1d1");
     let CAVSTag = hex!("bb3f5ab9ba91f905");
-    let Z = hex!("43b4e7b9b3dbaf598218e647274bf3d98f393e7d4ed9c0f8e1889c79");
+    let _Z = hex!("43b4e7b9b3dbaf598218e647274bf3d98f393e7d4ed9c0f8e1889c79");
     let MacData = hex!("5374616e646172642054657374204d6573736167651e4185a1c17ab6bbaf391bea4b2745ca");
     let DKM = hex!("29ca1a4b43ae978ba89089dc4e2c");
 
@@ -340,53 +248,21 @@ fn test_cavp_kasvs_mqv1_p224() {
     assert! ( QeIUT.as_affine().x() == QeIUTx);
     assert! ( QeIUT.to_sec1_point(false).y().unwrap() == &QeIUTy );
 
-    // let kdf = EcCombinerConcat::<Sha224>::new_with_salt(&OI);
-    // let encapsulator = kems::nistsp800_56a::EccOnePassMqvEncapsulator::<_,_,U14>::new(kdf, dsIUT2.clone());
-
-    // let mut pred_rng = PredictableRng::new(&deIUT);
-    // let (c0_calc, k_calc ) = encapsulator.try_encap(&mut pred_rng, &QsCAVS2).unwrap();
-    // assert! ( k_calc.as_bytes() == DKM);
-
-    // let kdf2 = EcCombinerConcat::<Sha224>::new_with_salt(&OI);
-    // let decapsulator = EcMqvAuthDecapsulator::<_,_,U14,EcUncompressedEncoder<_>>::new_with_params(dsCAVS2.clone(), kdf2);
-
-    // let k_calc2 = decapsulator.try_auth_decap(&c0_calc, &QsIUT).unwrap();
-    // assert! ( k_calc2.as_bytes() == DKM);
-
-    
-
-    // dbg!(calc_mac.as_slice());
-    // dbg!(CAVSTag);
     type MqvAuthP224ConcatSha224 = KemAuthWithKdf<EcMqvAuthCapsulator<NistP224, EcUncompressedEncoder<NistP224>>, CombinerNoKeys, ConcatKdf<Sha224>, U14>;
-
     
-    // With new traits
-    //let mut pred_rng = PredictableRng::new(&deIUT);
-    // let mut encapsulator = EcMqvAuthEncapsulatorCompressed::<_, EcCombinerConcat::<Sha224>,U14>::from_keys(QsCAVS2, dsIUT2 );
     let mut encapsulator = <MqvAuthP224ConcatSha224 as Capsulator>::Encapsulator::from_keys(QsCAVS2, dsIUT2 );
-
-    //let kdf = EcCombinerConcat::<Sha224>::new_with_salt(&OI);
-    let kdf = ConcatKdf::<Sha224>::new_with_salt(&OI);
-    encapsulator.set_kdf(kdf);
-    //let (c0_calc, k_calc) = encapsulator.encapsulate(&mut pred_rng).unwrap();
+    encapsulator.set_kdf(ConcatKdf::<Sha224>::new_with_salt(&OI));
     let (c0_calc, k_calc) = encapsulator.encapsulate_deterministic(&deIUT).unwrap();
-
     assert_eq!( k_calc.as_slice(), DKM);
 
-    let kdf = ConcatKdf::<Sha224>::new_with_salt(&OI);
-    //let mut decapsulator = EcdhDecapsulator::<_,_,U16,EcUncompressedEncoder<NistP256>>::new_with_params(dsCAVS2, kdf);
-    //let mut decapsulator = EcMqvAuthDecapsulator::<_,_,U14,EcCompressedEncoder<NistP224>>::from_keys(QsIUT, dsCAVS2 );
     let mut decapsulator = <MqvAuthP224ConcatSha224 as Capsulator>::Decapsulator::from_keys(QsIUT, dsCAVS2);
-    decapsulator.set_kdf(kdf);
+    decapsulator.set_kdf(ConcatKdf::<Sha224>::new_with_salt(&OI));
     let k_calc2 = decapsulator.decapsulate(&c0_calc).unwrap();
     assert_eq!( k_calc2.as_slice(), DKM);
 
     let mut hmac = <hmac::Hmac::<sha2::Sha512> as KeyInit>::new_from_slice(k_calc2.as_slice()).unwrap();
     hmac.update(&MacData);
-    //let calc_mac = hmac.finalize().into_bytes();
-
     assert_eq! ( hmac.verify_truncated_left(&CAVSTag), Ok(()));
-
 }
 
 
@@ -397,15 +273,12 @@ fn test_cavp_kasvs_mqv1_p224() {
 /// 2016/No Key Confirmation/ECC OnePass Unified Scheme/KASValidityTest_ECCOnePassUnified_KDFConcat_NOKC_init.fax
 /// 
 #[test]
-#[allow(non_snake_case, unused)]
+#[allow(non_snake_case)]
 fn test_cavp_kasvs_econepass_unified_p224() {
-    use kdfs::{misc::PassThroughKdf, nistsp800_56::ConcatKdf};
-    use kems::{Capsulator, eckem::{EcdhAuthCapsulatorCompressed}, kem_with_kdf::{CombinerNoKeys, KemAuthWithKdf, KemWithKdf}};
-
     let dsCAVS = hex!("6063bf909899dd91e051b4e207fb897f1ba226eea9e11b2696dfece7");
     let QsCAVSx = hex!("6d1d90c87af8d42f3706c765cc6f48bf847ed1ca1580d321568ba4de");
     let QsCAVSy = hex!("9df134d19dcd69263c82f2f7b0a7459c32e106edd7cb017a9e104cfb");
-    let Nonce = hex!("8717ded8ebdb064245488b8b21ccf6a6");
+    let _Nonce = hex!("8717ded8ebdb064245488b8b21ccf6a6");
     let dsIUT = hex!("206c5b9a7c482ca92d8a553fc4776832f9c3c72b421f1111030de800");
     let QsIUTx = hex!("9c41bb89986c833559dbba3edfcac5da68933342375d1cc75f9e7c4b");
     let QsIUTy = hex!("88a6e5eaac2ec1ef5389e7a4f35b8da34e26ea6f87e8b8d045d80e93");
@@ -413,59 +286,43 @@ fn test_cavp_kasvs_econepass_unified_p224() {
     let QeIUTx = hex!("2f1f5b753799175bd49facaeb890654de35999140111378a009bb22c");
     let QeIUTy = hex!("903444521545e6dc3a190675f3eeb396cbf95872148b03527eb4891d");
     let OI = hex!("a1b2c3d4e543415653696488ffe310eb6932b8738dcf0b3b30342b2f9c5bbab6ab819195212ab5103e65865194513a");
-    let OI_nonce = hex!("a1b2c3d4e5 434156536964 ee6fdfa830611fe4ccdff1c94728292f3061e40cb0dcbedc63994546660daefcb223c7e3 7f67e5fa8246d3d060c73c0f6d80ac29");
+    let _OI_nonce = hex!("a1b2c3d4e5 434156536964 ee6fdfa830611fe4ccdff1c94728292f3061e40cb0dcbedc63994546660daefcb223c7e3 7f67e5fa8246d3d060c73c0f6d80ac29");
                            //            C A V U i d   
     let CAVSTag = hex!("f27458ced21439d1");
-    let Z = hex!("823c48dc319c46780a1c14b77d18dbf901c40338d8628b50a0c88913f42e25b57aee7211f2ee6fdea24c5da666d9474371fea1d2184b4cd0");
+    let _Z = hex!("823c48dc319c46780a1c14b77d18dbf901c40338d8628b50a0c88913f42e25b57aee7211f2ee6fdea24c5da666d9474371fea1d2184b4cd0");
     let MacData = hex!("5374616e646172642054657374204d6573736167658717ded8ebdb064245488b8b21ccf6a6");
     let DKM = hex!("ddb3a08a153c2e20ad9bfd93e862");
 
     let dsCAVS2 = elliptic_curve::SecretKey::<NistP224>::from_bytes ( &dsCAVS.into() ).unwrap();
     let QsCAVS2 = dsCAVS2.public_key();
     assert! ( QsCAVS2.as_affine().x() == QsCAVSx);
+    assert! ( QsCAVS2.as_affine().y() == QsCAVSy);
     
     let deIUT2 = elliptic_curve::SecretKey::<NistP224>::from_bytes ( &deIUT.into() ).unwrap();
     let QeIUT = deIUT2.public_key();
     assert! ( QeIUT.as_affine().x() == QeIUTx);
+    assert! ( QeIUT.as_affine().y() == QeIUTy);
 
     let dsIUT2 = elliptic_curve::SecretKey::<NistP224>::from_bytes ( &dsIUT.into() ).unwrap();
     let QsIUT = dsIUT2.public_key();
     assert! ( QsIUT.as_affine().x() == QsIUTx);
-
-    // let kdf = EcCombinerConcat::<Sha224>::new_with_salt(&OI);
-    // let encapsulator = EcdhAuthEncapsulatorCompressed::new(kdf, dsIUT2.clone());
-
-    // let mut pred_rng = PredictableRng::new(&deIUT);
-    // let (c0_calc, k_calc ) = encapsulator.try_encap(&mut pred_rng, &QsCAVS2).unwrap();
-    // assert! ( k_calc.as_bytes() == DKM);
-    // assert_eq! ( c0_calc.to_public_key().unwrap().as_affine().x(), QeIUTx.into());
-
-    // let kdf = EcCombinerConcat::<Sha224>::new_with_salt(&OI);
-    // let decapsulator = EcdhAuthDecapsulator::<_,_,U14, EcCompressedEncoder<NistP224>>::new_with_params(dsCAVS2.clone(), kdf);
-
-    // let k_calc2 = decapsulator.try_auth_decap(&c0_calc, &QsIUT).unwrap();
-    // assert! ( k_calc2.as_bytes() == DKM); 
-
+    assert! ( QsIUT.as_affine().y() == QsIUTy);
 
     // With new traits
-    //let mut pred_rng = PredictableRng::new(&deIUT);
-    //let mut encapsulator = EcdhAuthEncapsulatorCompressed::<_, EcCombinerConcat::<Sha224>,U14>::from_keys(QsCAVS2, dsIUT2, );
     let mut encapsulator = <KemAuthWithKdf::<EcdhAuthCapsulatorCompressed<_,SeedAsScalar>, CombinerNoKeys, ConcatKdf<Sha224>, U14> as Capsulator>::Encapsulator::from_keys(QsCAVS2, dsIUT2);
-    //let kdf = EcCombinerConcat::<Sha224>::new_with_salt(&OI);
-    let kdf = ConcatKdf::<Sha224>::new_with_salt(&OI);
-    encapsulator.set_kdf(kdf);
+    encapsulator.set_kdf(ConcatKdf::<Sha224>::new_with_salt(&OI));
     let (c0_calc, k_calc) = encapsulator.encapsulate_deterministic(&deIUT).unwrap();
-
     assert_eq!( k_calc.as_slice(), DKM);
 
-    //let kdf = EcCombinerConcat::<Sha224>::new_with_salt(&OI);
-    let kdf = ConcatKdf::<Sha224>::new_with_salt(&OI);
-    //let mut decapsulator = EcdhDecapsulator::<_,_,U16,EcUncompressedEncoder<NistP256>>::new_with_params(dsCAVS2, kdf);
-    //let mut decapsulator = EcdhAuthDecapsulator::<_,_,U14,EcCompressedEncoder<NistP224>>::from_keys(QsIUT, dsCAVS2 );
     let mut decapsulator = <KemAuthWithKdf::<EcdhAuthCapsulatorCompressed<_,SeedAsScalar>, CombinerNoKeys, ConcatKdf<Sha224>, U14> as Capsulator>::Decapsulator::from_keys(QsIUT, dsCAVS2);
-    decapsulator.set_kdf(kdf);
+    decapsulator.set_kdf(ConcatKdf::<Sha224>::new_with_salt(&OI));
     let k_calc2 = decapsulator.decapsulate(&c0_calc).unwrap();
     assert_eq!( k_calc2.as_slice(), DKM);
+
+    let mut hmac = <hmac::Hmac::<sha2::Sha512> as KeyInit>::new_from_slice(k_calc2.as_slice()).unwrap();
+    hmac.update(&MacData);
+    assert_eq! ( hmac.verify_truncated_left(&CAVSTag), Ok(()));
+
 }
 
 //Result = F (10 - OI changed ),,,,,,,              
@@ -476,15 +333,12 @@ fn test_cavp_kasvs_econepass_unified_p224() {
 /// 2016, No Key Confirmation/ECC OnePass Unified Scheme/KASValidityTest_ECCOnePassUnified_KDFConcat_NOKC_init.fax
 /// 
 #[test]
-#[allow(non_snake_case, unused)]
+#[allow(non_snake_case)]
 fn test_cavp_kasvs_econepass_unified_p521() {
-    use kdfs::nistsp800_56::ConcatKdf;
-    use kems::{Capsulator, nistsp800_56a::{EccOnePassUnifiedCapsulator, EccOnePassUnifiedEncapsulator}};
-
     let dsCAVS = hex!("000001befc3cedcdba844442c648c1740c36c274e2233f78b8a4671cadb4c779b7e63850930a7cc807243872a01951d0d38641e324f71493edb5439d5b90e51c177b898b");
     let QsCAVSx = hex!("0000017d3594caa6d3a5815e2a9cc65a8b0cfacfdfa599d2f96ecab75eaa17c8b7244c8abbb871ded4a119a1d7df49ef4f9bc885fb83de2c0783e5197c6c29cce4578633");
     let QsCAVSy = hex!("00000068db9bf4a306d1a63ee7612044e949e9db20c913d956ddd4769ab18601fc8cf9f4afb79cd068489488bdfffd2df9b7c960863b57587bdfb6ec768e08147cc9b9d0");
-    let Nonce = hex!("7364579c227be1d2450990f19f1469bc");
+    let _Nonce = hex!("7364579c227be1d2450990f19f1469bc");
     let dsIUT = hex!("000001b2658eebab68fb94b95e7f0d2100eccc01d304b7326781ed608010c3e7cfb0e1613b2f68b2503bd2b655986c65035cb1a1d68a5faeca3d6a86907dcf2b2aff0561");
     let QsIUTx = hex!("000001765a15324b1fc3ec6abb4820859169fad950ab2d2b202163e73496487017e3367db23020e75363058065505145dea8779a34fc79ffab676f06d44f6db451456ec4");
     let QsIUTy = hex!("000001159a58fbf2610c5e20f7974cdd5ee6739b0a034a8441c450cf52d31475fd5b3c66f32999b727b8323d6016112fe5cc32991616383e0f6d5220679f0dd496fcb3f2");
@@ -494,7 +348,7 @@ fn test_cavp_kasvs_econepass_unified_p521() {
     let OI = hex!("a1b2c3d4e5 434156536964 f7aa9cd958eaf8ae5b970f4f0630b3584e681b2edbd6d14b0ceeccd63b30d877429f3f69");
                 
     let CAVSTag = hex!("8d7e6ceadf601e7cd64ef775de16dff9c23c1bae3c634dbad3ae223c64913e67");
-    let Z = hex!("009e5a7406ef4da0fa16fe47714b11117b4bf30bcf7677a067ad2b30fe82d4b0f66870590d5ca75228deae886007399a6e9296c5535fb9bd5b4aa11e3e2c3112fd4a00d3d99623d95888c27747ee3865e845dec85ee3d3a8eb5f0afc6ab2e501c907a7413790bb2701daa97880a808e71c68cdc19cde3032a8f0212652b3750c0e1f9948");
+    let _Z = hex!("009e5a7406ef4da0fa16fe47714b11117b4bf30bcf7677a067ad2b30fe82d4b0f66870590d5ca75228deae886007399a6e9296c5535fb9bd5b4aa11e3e2c3112fd4a00d3d99623d95888c27747ee3865e845dec85ee3d3a8eb5f0afc6ab2e501c907a7413790bb2701daa97880a808e71c68cdc19cde3032a8f0212652b3750c0e1f9948");
     let MacData = hex!("5374616e646172642054657374204d6573736167657364579c227be1d2450990f19f1469bc");
     let DKM = hex!("6a164a9cb2f95b83381e12073988fc7ca59ba5e49689a69cd0d42ed2785913b9");
 
@@ -502,6 +356,7 @@ fn test_cavp_kasvs_econepass_unified_p521() {
     let dsCAVS2 = elliptic_curve::SecretKey::<NistP521>::from_bytes ( dsCAVS[2..].try_into().unwrap() ).unwrap();
     let QsCAVS2 = dsCAVS2.public_key();
     assert! ( QsCAVS2.as_affine().x().as_slice() == &QsCAVSx[2..]);
+    assert! ( QsCAVS2.as_affine().y().as_slice() == &QsCAVSy[2..]);
     
     let deIUT2 = elliptic_curve::SecretKey::<NistP521>::from_bytes ( deIUT[2..].try_into().unwrap() ).unwrap();
     let QeIUT = deIUT2.public_key();
@@ -510,38 +365,23 @@ fn test_cavp_kasvs_econepass_unified_p521() {
     let dsIUT2 = elliptic_curve::SecretKey::<NistP521>::from_bytes ( dsIUT[2..].try_into().unwrap()).unwrap();
     let QsIUT = dsIUT2.public_key();
     assert! ( QsIUT.as_affine().x().as_slice() == &QsIUTx[2..]);
-
-    // Repeat using KEM methods
-    // let kdf = EcCombinerConcat::<Sha512>::new_with_salt(&OI);
-    // let encapsulator = EcdhAuthEncapsulatorCompressed::new(kdf, dsIUT2.clone());
-
-    // let mut pred_rng = PredictableRng::new(&deIUT[2..]);
-    // let (c0_calc, k_calc ) = encapsulator.try_encap(&mut pred_rng, &QsCAVS2).unwrap();
-    // assert! ( k_calc.as_bytes() == DKM);
-
-    // let kdf = EcCombinerConcat::<Sha512>::new_with_salt(&OI);
-    // let decapsulator = EcdhAuthDecapsulator::<_,_,U32, EcCompressedEncoder<NistP521>>::new_with_params(dsCAVS2.clone(), kdf);
-
-    // let k_calc2 = decapsulator.try_auth_decap(&c0_calc, &QsIUT).unwrap();
-    // assert! ( k_calc2.as_bytes() == DKM); 
+    assert! ( QsIUT.as_affine().y().as_slice() == &QsIUTy[2..]);
 
     // With new traits
-    //let mut pred_rng = PredictableRng::new(&deIUT[2..]);
-    //let mut encapsulator = EcdhAuthEncapsulatorCompressed::<_, EcCombinerConcat::<Sha512>,U32>::from_keys(QsCAVS2, dsIUT2 );
-    let mut encapsulator = <EccOnePassUnifiedCapsulator<NistP521, ConcatKdf<Sha512>, U32> as Capsulator>::Encapsulator::from_keys(QsCAVS2, dsIUT2);
-    //let kdf = EcCombinerConcat::<Sha512>::new_with_salt(&OI);
-    let kdf = ConcatKdf::<Sha512>::new_with_salt(&OI);
-    encapsulator.set_kdf(kdf);
-    //let (c0_calc, k_calc) = encapsulator.encapsulate(&mut pred_rng).unwrap();
+    let mut encapsulator = <EccOnePassUnifiedCapsulator<NistP521, _, U32> as Capsulator>::Encapsulator::from_keys(QsCAVS2, dsIUT2);
+    encapsulator.set_kdf(ConcatKdf::<Sha512>::new_with_salt(&OI));
     let (c0_calc, k_calc) = encapsulator.encapsulate_deterministic(&deIUT[2..]).unwrap();
+    assert_eq!( k_calc, DKM);
+    assert_eq!( &c0_calc[1..67], &QeIUTx[2..]);
+    assert_eq!( &c0_calc[67..], &QeIUTy[2..]);
 
-    assert_eq!( k_calc.as_slice(), DKM);
 
-    let kdf = ConcatKdf::<Sha512>::new_with_salt(&OI);
-    //let mut decapsulator = EcdhDecapsulator::<_,_,U16,EcUncompressedEncoder<NistP256>>::new_with_params(dsCAVS2, kdf);
-    //let mut decapsulator = EcdhAuthDecapsulator::<_,_,U32,EcCompressedEncoder<NistP521>>::from_keys(QsIUT, dsCAVS2 );
     let mut decapsulator = <EccOnePassUnifiedCapsulator<NistP521, ConcatKdf<Sha512>, U32> as Capsulator>::Decapsulator::from_keys(QsIUT, dsCAVS2 );
-    decapsulator.set_kdf(kdf);
+    decapsulator.set_kdf(ConcatKdf::<Sha512>::new_with_salt(&OI));
     let k_calc2 = decapsulator.decapsulate(&c0_calc).unwrap();
     assert_eq!( k_calc2.as_slice(), DKM);
+
+    let mut hmac = <hmac::Hmac::<sha2::Sha512> as KeyInit>::new_from_slice(k_calc2.as_slice()).unwrap();
+    hmac.update(&MacData);
+    assert_eq! ( hmac.verify_truncated_left(&CAVSTag), Ok(()));
 }

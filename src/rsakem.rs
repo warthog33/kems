@@ -18,10 +18,10 @@
 //! let recipient_private_key = rsa::RsaPrivateKey::new(&mut rand::rng(), 1024).expect("failed to generate a key");
 //! let recipient_public_key = recipient_private_key.to_public_key();
 //! 
-//! let encapsulator = RsaOrigKem::<U128, U16, Kdf1::<Sha256>>::new_encapsulator(recipient_public_key);
+//! let encapsulator = RsaOrigKem::<U128, U16, Kdf1::<Sha256>>::from_public_key(recipient_public_key);
 //! let (ct, k_send) = encapsulator.encapsulate(&mut OsRng).unwrap();
 //! 
-//! let decapsulator = RsaOrigKem::<U128, U16,Kdf1::<Sha256>>::new_decapsulator(recipient_private_key);
+//! let decapsulator = RsaOrigKem::<U128, U16,Kdf1::<Sha256>>::from_private_key(recipient_private_key);
 //! let (k_recv) = decapsulator.decapsulate(&ct).unwrap();
 //! assert! ( k_send == k_recv);
 //!

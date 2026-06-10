@@ -4,6 +4,8 @@
 //! 
 use crate::kem_with_kdf::{CombinerNoKeys, KemWithKdf};
 use crate::{Array, ArraySize, ArrayLength, Capsulator, CryptoRngCore, Decapsulate, DecodeGenericArray, Encapsulate, EncapsulateDeterministic2, EncodeGenericArray, EncodedSizeUser2, GenerateCapsulatorFromSeed, GenericArray, GetEncapsulator, GetRecipientPublicKeyBytes};
+#[cfg(all(feature="rustcrypto-ml-kem", feature="rustcrypto-sha3"))]
+use cipher::consts::U16;
 use kdfs::{misc::PassThroughKdf, Kdf};
 use ml_kem::{self, EncapsulateDeterministic, EncodedSizeUser, KemCore, MlKem768Params};
 use cipher::consts::{U32, U64};
@@ -45,6 +47,9 @@ pub struct MlKemWrapper<M: KemCore, G = PassThroughKdf> (PhantomData<M>, Phantom
 /// Type representing ML-KEM with a separate key derivation applied to the output
 /// 
 pub type MlKemWithOutputKdf<M,K> = KemWithKdf<MlKemWrapper<M, PassThroughKdf>, CombinerNoKeys, K, U32>;
+
+#[cfg(all(feature="rustcrypto-ml-kem", feature="rustcrypto-sha3"))]
+pub type MlKem768WithX963KdfU16 = KemWithKdf<MlKemWrapper<ml_kem::MlKem768, PassThroughKdf>, CombinerNoKeys, kdfs::ansi_x9_63::X963Kdf<sha3::Sha3_256>, U16>;
 
 ///
 /// Type representing ML-KEM with a separate key derivation applied during derivation from seed
