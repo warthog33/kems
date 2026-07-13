@@ -26,7 +26,7 @@ rustcrypto-aeskw =["dep:aes-kw"]
 oid = ["dep:const-oid"]
 
 [dependencies]
-#kem = { version = "=0.3.0-pre.0" }
+kem = { version = "0.3.0", feature=["getrandom"] }
 kdfs = { path = "../kdfs" }
 cipher = { version = "0.5.0-rc.0", features = ["alloc"] }
 digest = "0.11.0"

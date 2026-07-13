@@ -20,13 +20,14 @@ use crate::mlkem::{WrappedMlKem768,WrappedMlKem1024};
 use crate::{hybrid::QsfCombiner2, x25519kem::X25519Capsulator, xwing::LabelXWing};
 
     use kdfs::iso11770_6::Okdf3;
-    use sha3::Sha3_256;
-    use shake::Shake256;
 
-    use crate::eckem::{SeedAsScalar};
-    use crate::hybrid::{QsfCombiner,ExpandSeed,HybridKem};
+#[cfg(all(feature="rustcrypto-sha3"))]
+use sha3::Sha3_256;
+#[cfg(all(feature="rustcrypto-sha3"))]
+use shake::Shake256;
 
-
+use crate::eckem::{SeedAsScalar};
+use crate::hybrid::{QsfCombiner,ExpandSeed,HybridKem};
 
 use crate::eckem::{EcdhKemUncompressed};
 #[cfg(all(feature="rustcrypto-rsa", feature="rustcrypto-sha2"))]
@@ -761,6 +762,7 @@ pub mod draft_ietf_lamps_cms_kyber {
     // }
 }
 
+#[cfg(feature="rustcrypto-ml-kem")]
 pub mod mlkem {
     use const_oid::{AssociatedOid, ObjectIdentifier, db::fips203::{ID_ALG_ML_KEM_512, ID_ALG_ML_KEM_768, ID_ALG_ML_KEM_1024}};
     use ::ml_kem::{MlKem512, MlKem768, MlKem1024};

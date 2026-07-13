@@ -47,7 +47,7 @@ use cipher::common::KeyExport;
 use cipher::consts::{U1,U2};
 #[allow(unused)]
 use cipher::typenum::{Diff, Quot, Sum};
-use digest::const_oid::AssociatedOid;
+use const_oid::AssociatedOid;
 use elliptic_curve::{AffinePoint, Curve, CurveArithmetic, FieldBytesSize, Generate, NonZeroScalar, PrimeCurve, ProjectivePoint, PublicKey, Scalar, ScalarValue, SecretKey};
 use elliptic_curve::bigint::Encoding;
 use elliptic_curve::sec1::{CompressedPointSize, FromSec1Point, ModulusSize, Sec1Point, ToSec1Point, UncompressedPointSize, ValidatePublicKey};
@@ -58,8 +58,7 @@ use elliptic_curve::bigint::ArrayEncoding;
 use generic_array::{ArrayLength, GenericArray};
 use generic_array::typenum::Unsigned;
 use kdfs::hybrid_array::{Array, ArraySize};
-use ml_kem::TryKeyInit;
-use ml_kem::kem::{Decapsulator, TryDecapsulate};
+use kem::{Decapsulator, TryKeyInit, TryDecapsulate};
 
 use crate::{Capsulator, CryptoRngCore, Decapsulate, DecodeSlice, Encapsulate, EncapsulateDeterministic2, EncodeGenericArray, EncodeHybridArray, GenerateDeterministic2, GenerateDeterministic4};
 use crate::{FromKey, FromKeys, GenerateDeterministic3, GetRecipientPublicKeyBytes, GetSenderPublicKeyBytes};
@@ -2312,7 +2311,7 @@ impl GenerateDeterministic2<SecretKey<NistP384>> for ReduceSeed
 
 
 
-impl<C, DE,G, S> ml_kem::kem::Kem for EcdhKem<C,DE,G, S>
+impl<C, DE,G, S> kem::Kem for EcdhKem<C,DE,G, S>
 where C: Sync + Send,
     C: CurveArithmetic+PointCompression,
     C::FieldBytesSize: ModulusSize,
@@ -2402,7 +2401,7 @@ where C: CurveArithmetic+PointCompression,
         Self { recipient_public: self.recipient_public.clone(), _phantom2: self._phantom2.clone(), _phantom5: self._phantom5.clone(), _phantom6: self._phantom6.clone() }
     }
 }
-impl<C, DE,G, S> ml_kem::Encapsulate for EcdhEncapsulator<C,DE,S,G>
+impl<C, DE,G, S> kem::Encapsulate for EcdhEncapsulator<C,DE,S,G>
 where C: Sync + Send,
     C: CurveArithmetic+PointCompression,
     C::FieldBytesSize: ModulusSize,
@@ -2418,7 +2417,7 @@ where C: Sync + Send,
 {
     type Kem = EcdhKem<C,DE,G, S>;
 
-    fn encapsulate_with_rng<R>(&self, _rng: &mut R) -> (ml_kem::Ciphertext<Self::Kem>, ml_kem::kem::SharedKey<Self::Kem>)
+    fn encapsulate_with_rng<R>(&self, _rng: &mut R) -> (kem::Ciphertext<Self::Kem>, kem::SharedKey<Self::Kem>)
     where
         R: rand::CryptoRng + ?Sized {
         todo!()
@@ -2430,7 +2429,7 @@ where C: CurveArithmetic+PointCompression,
     <DE as DecodeSlice<PublicKey<C>>>::Error: Debug,
     DE::EncodedLen: ArraySize,
 {
-    fn new(_key: &cipher::Key<Self>) -> Result<Self, ml_kem::InvalidKey> {
+    fn new(_key: &cipher::Key<Self>) -> Result<Self, kem::InvalidKey> {
         todo!()
     }
 }
@@ -2463,8 +2462,8 @@ where C: Sync + Send,
 
     fn try_decapsulate(
         &self,
-        _ct: &ml_kem::Ciphertext<Self::Kem>,
-    ) -> Result<ml_kem::kem::SharedKey<Self::Kem>, Self::Error> {
+        _ct: &kem::Ciphertext<Self::Kem>,
+    ) -> Result<kem::SharedKey<Self::Kem>, Self::Error> {
         todo!()
     }
 }
@@ -2485,7 +2484,7 @@ where C: Sync + Send,
 {
     type Kem = EcdhKem<C,DE,G, S>;
 
-    fn encapsulation_key(&self) -> &ml_kem::kem::EncapsulationKey<Self::Kem> {
+    fn encapsulation_key(&self) -> &kem::EncapsulationKey<Self::Kem> {
         todo!()
     }
 }

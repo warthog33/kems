@@ -18,6 +18,7 @@ use generic_array::sequence::Concat;
 use elliptic_curve::consts::*;
 use kdfs::hybrid_array::{Array, ArraySize};
 use kdfs::Kdf;
+#[cfg(feature="rustcrypto-sha3")]
 use shake::Shake256;
 
 /// 
@@ -616,6 +617,7 @@ where
     }
 }
 
+#[cfg(feature="rustcrypto-sha3")] // Uses Shake256..
 impl<M, C, COM, G> KeyInit for HybridDecapsulator<M, C, COM, G>
 where 
     M: Capsulator + GenerateDeterministic3,

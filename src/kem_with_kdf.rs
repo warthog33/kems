@@ -234,11 +234,11 @@ where KEM: Capsulator,
     }
 }
 
-impl<KEM, COM, KDF, L> ml_kem::Kem for KemWithKdf<KEM,COM,KDF,L>
+impl<KEM, COM, KDF, L> kem::Kem for KemWithKdf<KEM,COM,KDF,L>
 where KEM: Capsulator, // Required by KemWithKdfDecapsulator and KemWithKdfEncapsulator
-    KEM: ml_kem::Kem<CiphertextSize = <<KEM::Encapsulator as ml_kem::Encapsulate>::Kem as ml_kem::Kem>::CiphertextSize>,
-    KEM::Encapsulator: ml_kem::Encapsulate + KeySizeUser + KeyExport + KeyInit + std::cmp::Eq + Clone + std::fmt::Debug + GetRecipientPublicKeyBytes,
-    KEM::EncapsulationKey: ml_kem::Encapsulate, // + KeySizeUser + KeyExport + KeyInit + std::cmp::Eq + Clone + Copy + std::fmt::Debug + GetRecipientPublicKeyBytes,
+    KEM: kem::Kem<CiphertextSize = <<KEM::Encapsulator as kem::Encapsulate>::Kem as kem::Kem>::CiphertextSize>,
+    KEM::Encapsulator: kem::Encapsulate + KeySizeUser + KeyExport + KeyInit + std::cmp::Eq + Clone + std::fmt::Debug + GetRecipientPublicKeyBytes,
+    KEM::EncapsulationKey: kem::Encapsulate, // + KeySizeUser + KeyExport + KeyInit + std::cmp::Eq + Clone + Copy + std::fmt::Debug + GetRecipientPublicKeyBytes,
     
     COM: Combiner + std::fmt::Debug + std::cmp::Ord + Default + Copy + Sync + Send + 'static,
     KDF: Default + std::fmt::Debug + Sync + Clone + Send + 'static,
@@ -253,7 +253,7 @@ where KEM: Capsulator, // Required by KemWithKdfDecapsulator and KemWithKdfEncap
     type DecapsulationKey = KemWithKdfDecapsulator<KEM, COM, KDF, L>;
     type EncapsulationKey = KemWithKdfEncapsulator<KEM, COM, KDF, L>;
     type SharedKeySize = L;
-    type CiphertextSize = <KEM as ml_kem::Kem>::CiphertextSize;
+    type CiphertextSize = <KEM as kem::Kem>::CiphertextSize;
 }
 
 
@@ -317,8 +317,8 @@ where KEM: Capsulator,
     }
 }
 
-impl<KEM, COM, KDF, N> ml_kem::kem::Encapsulate for KemWithKdfEncapsulator<KEM,COM,KDF,N>
-where KEM: Capsulator + ml_kem::Kem<CiphertextSize = <<<KEM as Capsulator>::Encapsulator as ml_kem::Encapsulate>::Kem as ml_kem::Kem>::CiphertextSize>,
+impl<KEM, COM, KDF, N> kem::Encapsulate for KemWithKdfEncapsulator<KEM,COM,KDF,N>
+where KEM: Capsulator + kem::Kem<CiphertextSize = <<<KEM as Capsulator>::Encapsulator as kem::Encapsulate>::Kem as kem::Kem>::CiphertextSize>,
 
    //expected  <KEM as Kem>::CiphertextSize>
    //found struct `<<<KEM as Capsulator>::Encapsulator as ml_kem::Encapsulate>::Kem as Kem>::CiphertextSize>
@@ -327,16 +327,16 @@ where KEM: Capsulator + ml_kem::Kem<CiphertextSize = <<<KEM as Capsulator>::Enca
     COM: Combiner + std::fmt::Debug + std::cmp::Ord + Default + Copy + Sync + Send + 'static,
     KDF: Kdf + std::fmt::Debug + Default + Sync + Send + Clone + 'static,
     KEM: Capsulator,
-    KEM::Encapsulator: KeySizeUser + KeyExport + KeyInit + std::cmp::Eq + Clone + std::fmt::Debug + GetRecipientPublicKeyBytes + ml_kem::Encapsulate,
+    KEM::Encapsulator: KeySizeUser + KeyExport + KeyInit + std::cmp::Eq + Clone + std::fmt::Debug + GetRecipientPublicKeyBytes + kem::Encapsulate,
     KEM::Decapsulator: GetRecipientPublicKeyBytes,
     
 {
     type Kem = KemWithKdf<KEM,COM,KDF,N>;
 
-    fn encapsulate_with_rng<R>(&self, _rng: &mut R) -> (ml_kem::Ciphertext<Self::Kem>, ml_kem::kem::SharedKey<Self::Kem>)
+    fn encapsulate_with_rng<R>(&self, _rng: &mut R) -> (kem::Ciphertext<Self::Kem>, kem::SharedKey<Self::Kem>)
     where
         R: rand::CryptoRng + ?Sized {
-        let (ciphertext, raw_shared_secret) = ml_kem::Encapsulate::encapsulate(&self.encapsulator);
+        let (ciphertext, raw_shared_secret) = kem::Encapsulate::encapsulate_with_rng(&self.encapsulator, _rng);
         let shared_secret = COM::combine(raw_shared_secret, &ciphertext, &self.encapsulator, &self.kdf).unwrap();
         (ciphertext, shared_secret)
     }
@@ -435,12 +435,12 @@ where KEM: Capsulator,
     }
 }
 
-impl<KEM,COM,KDF,N> ml_kem::TryKeyInit for KemWithKdfEncapsulator<KEM,COM,KDF,N> 
+impl<KEM,COM,KDF,N> kem::TryKeyInit for KemWithKdfEncapsulator<KEM,COM,KDF,N> 
 where KEM: Capsulator,
     KEM::Encapsulator: KeySizeUser + KeyInit,
     KDF: Default,
 {
-    fn new(_key: &cipher::Key<Self>) -> Result<Self, ml_kem::InvalidKey> {
+    fn new(_key: &cipher::Key<Self>) -> Result<Self, kem::InvalidKey> {
         todo!()
     }
 }
@@ -517,7 +517,7 @@ where KEM: Capsulator,
     }
 }
 
-impl<KEM,COM,KDF,N> ml_kem::Generate for KemWithKdfDecapsulator<KEM,COM,KDF,N>
+impl<KEM,COM,KDF,N> kem::Generate for KemWithKdfDecapsulator<KEM,COM,KDF,N>
 where KEM: Capsulator
 {
     fn try_generate_from_rng<R: rand::TryCryptoRng + ?Sized>(_rng: &mut R) -> Result<Self, R::Error> {
@@ -525,44 +525,44 @@ where KEM: Capsulator
     }
 }
 
-impl<KEM,COM,KDF,N> ml_kem::kem::Decapsulator for KemWithKdfDecapsulator<KEM,COM,KDF,N>
-where KEM: Capsulator + ml_kem::Kem,
+impl<KEM,COM,KDF,N> kem::Decapsulator for KemWithKdfDecapsulator<KEM,COM,KDF,N>
+where KEM: Capsulator + kem::Kem,
     COM: Combiner + Sync + Send + Default + std::fmt::Debug + std::cmp::Ord + Copy + 'static,
     KDF: Kdf + std::fmt::Debug + Default + Sync + Send + Clone + 'static,
     N: std::cmp::Ord + Sync + Send + ArraySize,
-    <KEM as Capsulator>::Encapsulator: KeyExport + KeyInit + Clone + std::cmp::Eq + std::fmt::Debug + ml_kem::Encapsulate + GetRecipientPublicKeyBytes,
-    KEM: Capsulator + ml_kem::Kem<CiphertextSize = <<<KEM as Capsulator>::Encapsulator as ml_kem::Encapsulate>::Kem as ml_kem::Kem>::CiphertextSize>,
+    <KEM as Capsulator>::Encapsulator: KeyExport + KeyInit + Clone + std::cmp::Eq + std::fmt::Debug + kem::Encapsulate + GetRecipientPublicKeyBytes,
+    KEM: Capsulator + kem::Kem<CiphertextSize = <<<KEM as Capsulator>::Encapsulator as kem::Encapsulate>::Kem as kem::Kem>::CiphertextSize>,
     KEM::Decapsulator: GetRecipientPublicKeyBytes,
 {
     type Kem = KemWithKdf<KEM,COM,KDF,N>;
 
-    fn encapsulation_key(&self) -> &ml_kem::kem::EncapsulationKey<Self::Kem> {
+    fn encapsulation_key(&self) -> &kem::EncapsulationKey<Self::Kem> {
         todo!()
     }
 }
 
-impl<KEM,COM,KDF,N> ml_kem::kem::TryDecapsulate for KemWithKdfDecapsulator<KEM,COM,KDF,N>
+impl<KEM,COM,KDF,N> kem::TryDecapsulate for KemWithKdfDecapsulator<KEM,COM,KDF,N>
 where KEM: Capsulator, // + ml_kem::Kem,
     // COM: Combiner + Sync + Send + Default + std::fmt::Debug + std::cmp::Ord + Copy + 'static,
     // KDF: Kdf + std::fmt::Debug + Default + Sync + Send + Clone + 'static,
     // N: std::cmp::Ord + Sync + Send + ArraySize,
     <KEM as Capsulator>::Encapsulator: KeyInit + std::cmp::Eq + Clone + std::fmt::Debug,
-    <KEM as Capsulator>::Encapsulator: ml_kem::Encapsulate + GetRecipientPublicKeyBytes,
-    KEM: Capsulator + ml_kem::Kem<CiphertextSize = <<<KEM as Capsulator>::Encapsulator as ml_kem::Encapsulate>::Kem as ml_kem::Kem>::CiphertextSize>,
+    <KEM as Capsulator>::Encapsulator: kem::Encapsulate + GetRecipientPublicKeyBytes,
+    KEM: Capsulator + kem::Kem<CiphertextSize = <<<KEM as Capsulator>::Encapsulator as kem::Encapsulate>::Kem as kem::Kem>::CiphertextSize>,
     KEM::Decapsulator: GetRecipientPublicKeyBytes,
 
     N: ArraySize + std::cmp::Ord + Sync + Send,
     COM: Combiner + std::fmt::Debug + std::cmp::Ord + Default + Copy + Sync + Send + 'static,
     KDF: Kdf + std::fmt::Debug + Default + Sync + Send + Clone + 'static,
     KEM: Capsulator,
-    KEM::Encapsulator: KeySizeUser + KeyExport + KeyInit + std::cmp::Eq + Clone + std::fmt::Debug + GetRecipientPublicKeyBytes + ml_kem::Encapsulate,
+    KEM::Encapsulator: KeySizeUser + KeyExport + KeyInit + std::cmp::Eq + Clone + std::fmt::Debug + GetRecipientPublicKeyBytes + kem::Encapsulate,
 {
     type Error = Infallible;
 
     fn try_decapsulate(
         &self,
-        ct: &ml_kem::Ciphertext<Self::Kem>,
-    ) -> Result<ml_kem::kem::SharedKey<Self::Kem>, Self::Error> {
+        ct: &kem::Ciphertext<Self::Kem>,
+    ) -> Result<kem::SharedKey<Self::Kem>, Self::Error> {
         //todo!()
         //let raw_shared_secret = ml_kem::Decapsulate::decapsulate(&self.decapsulator, .decapsulate(ct).unwrap();
         let raw_shared_secret = self.decapsulator.decapsulate(&GenericArray::from_slice(ct)).unwrap();
