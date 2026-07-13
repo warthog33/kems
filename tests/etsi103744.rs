@@ -1,4 +1,5 @@
 use cipher::consts::U16;
+use cipher::common::KeyExport;
 use digest::FixedOutput;
 use hex_literal::hex;
 use hmac::Hmac;
@@ -6,15 +7,15 @@ use hmac::HmacReset;
 use hmac::KeyInit;
 use kdfs::nistsp800_56::SskdfMac;
 use kdfs::rfc5869_hkdf::Hkdf;
+//use kems::GetEncapsulator;
 use kems::eckem::EcRawEncoder;
 use kems::eckem::EcXonlyEncoder;
 use kems::eckem::SeedAsScalar;
-use ml_kem::KemCore;
-use ml_kem::EncodedSizeUser;
+// use ml_kem::KemCore;
+// use ml_kem::EncodedSizeUser;
 use ml_kem::kem::Decapsulate;
 use kdfs::Kdf;
-use kems::EncodedSizeUser2;
-use kems::GenerateCapsulatorFromSeed;
+use kems::GenerateDeterministic3;
 use p256::NistP256;
 use p384::U48;
 use sha2::Sha256;
@@ -97,18 +98,21 @@ D412050CE09EC31075001286F401A58FE6217000D6A9C8BA753C4CE9D1D8CF8B908614DF0A81");
     let prvA1 = p256::elliptic_curve::SecretKey::<p256::NistP256>::from_bytes(&dA1.into()).unwrap();
     let _pubA2 = prvA1.public_key();
 
-    let (e,d) = kems::eckem::EcdhKem::<NistP256,EcRawEncoder<NistP256>,SeedAsScalar,EcXonlyEncoder<NistP256>>::derive_from_seed(&dA1.into());
+    let (e,d) = kems::eckem::EcdhKem::<NistP256,EcRawEncoder<NistP256>,SeedAsScalar,EcXonlyEncoder<NistP256>>::generate_deterministic(&dA1.into()).unwrap();
 
     //println! ( "{:02X?}", e.as_bytes());
-    assert_eq! ( e.as_bytes().as_slice(), &PA1);
+    assert_eq! ( e.to_bytes().as_slice(), &PA1);
 
+    use kems::Decapsulate;
     let k1_calc = d.decapsulate(&PB1.into()).unwrap();
     assert_eq! ( k1_calc, k1);
 
-    let (prv1, pub2) = ml_kem::MlKem768::generate_deterministic(&dA2.into(), &zA2.into());
-    assert_eq!( pub2.as_bytes().as_slice(), &PA2);
+    //let (prv1, pub2) = ml_kem::MlKem768::generate_deterministic(&dA2.into(), &zA2.into());
+    let prv1 = ml_kem::ml_kem_768::DecapsulationKey::from_seed([dA2, zA2].concat().try_into().unwrap());
+    let pub2 = prv1.encapsulation_key();
+    assert_eq!( pub2.to_bytes().as_slice(), &PA2);
 
-    let k2_calc = prv1.decapsulate(&PB2.into()).unwrap();
+    let k2_calc = prv1.decapsulate(&PB2.into());
     //println! ( "{:02X?}", k2_calc);
     assert_eq!(k2_calc, k2);
 

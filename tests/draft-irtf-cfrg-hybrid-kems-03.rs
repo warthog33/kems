@@ -1,16 +1,12 @@
 
 use hex_literal::hex;
-use kems::generic_array::GenericArray;
-//use josekit::Value;
-use kems::{Capsulator, EncodedSizeUser2,GenerateCapsulatorFromSeed, EncodeSeed, EncapsulateDeterministic2};
-use kems::draft_irtf_cfrg_hybrid_kems::HybridKemQsfMlKem768P256;
-use kems::draft_irtf_cfrg_hybrid_kems::HybridCapsulatorQsfMlKem1024P384;
-use kems::draft_irtf_cfrg_hybrid_kems::HybridCapsulatorKitchenSinkMlKem768X25519;
+use elliptic_curve::common::KeyExport;
+use kems::{Capsulator,GenerateDeterministic3, EncapsulateDeterministic2, GetRecipientPublicKeyBytes};
+use kems::draft_irtf_cfrg_hybrid_kems::{HybridKemQsfMlKem768P256,HybridCapsulatorQsfMlKem1024P384,HybridCapsulatorKitchenSinkMlKem768X25519};
+//use ml_kem::kem::{Decapsulate};
+use kems::Decapsulate;
 
-use ml_kem::kem::{Decapsulate};
 
-#[allow(unused)]
-use rand_core::OsRng;
 
 //mod common;
 //#[allow(unused)]
@@ -115,7 +111,6 @@ use rand_core::OsRng;
     
 
 #[test]
-#[allow(non_snake_case)]
 fn test_draft_irtf_cfrg_hybrid_kems_03_example1 () {
     //mode: 0
     //kem_id: 32
@@ -194,17 +189,18 @@ fn test_draft_irtf_cfrg_hybrid_kems_03_example1 () {
                 025fe300142bf6b8ca3bd4740054a10357688012c4103d274067f3fc18e8a4b908");
     let ss = hex!("b88b984b48563068da8c1a9159542513c6ed73a77b4778f71a40677bb3e31c0f");
 
-    let (encap, decap) = HybridKemQsfMlKem768P256::derive_from_seed(&seed.into());
-    assert_eq! ( encap.as_bytes().as_slice(), pk.as_slice());
-    assert_eq! ( decap.as_seed_bytes().unwrap(), sk);
+    let (encap, decap) = HybridKemQsfMlKem768P256::generate_deterministic(&seed.into()).unwrap();
+    assert_eq! ( encap.get_recipient_public_key_bytes(), pk.as_slice());
+    assert_eq! ( decap.to_bytes(), sk);
 
-    let encapsulator = <HybridKemQsfMlKem768P256 as Capsulator>::Encapsulator::from_bytes(pk.as_slice().try_into().unwrap());
-    assert_eq! ( encapsulator.as_bytes(), encap.as_bytes());
+    let encapsulator = HybridKemQsfMlKem768P256::try_from_slice_encap(&pk).unwrap();
+    assert_eq! ( encapsulator.get_recipient_public_key_bytes(), encap.get_recipient_public_key_bytes());
 
     let (ct_calc4, ss_calc4) = encapsulator.encapsulate_deterministic(&randomness).unwrap();
     assert_eq!( ct_calc4.as_slice(), &ct);
     assert_eq!( ss_calc4, ss);
 
+    use kems::Decapsulate;
     let ss_calc5 = decap.decapsulate(&ct_calc4).unwrap();
     assert_eq!( ss_calc5.as_slice(), ss);
 
@@ -216,7 +212,6 @@ fn test_draft_irtf_cfrg_hybrid_kems_03_example1 () {
 
 
 #[test]
-#[allow(non_snake_case)]
 fn test_draft_irtf_cfrg_hybrid_kems_03_example2 () {
     
     let seed  = hex!("df9a04302e10c8bc1cbf1a0b3a5120ea17cda7cfad765f5623474d368ccca8af");
@@ -295,12 +290,12 @@ fn test_draft_irtf_cfrg_hybrid_kems_03_example2 () {
         c401396b17");
     let ss = hex!("05b641ca0e134392312a1d2b3bb106c3dc23e19d7a9a384603f1fce497dc118a");
 
-    let (encapsulator, decapsulator) = HybridKemQsfMlKem768P256::derive_from_seed(&seed.into());
-    assert_eq! ( encapsulator.as_bytes().as_slice(), pk.as_slice());
-    assert_eq! ( decapsulator.as_seed_bytes().unwrap(), sk);
+    let (encapsulator, decapsulator) = HybridKemQsfMlKem768P256::generate_deterministic(&seed.into()).unwrap();
+    assert_eq! ( encapsulator.get_recipient_public_key_bytes(), pk.as_slice());
+    assert_eq! ( decapsulator.to_bytes(), sk);
 
-    let encapsulator2 = <HybridKemQsfMlKem768P256 as Capsulator>::Encapsulator::from_bytes(pk.as_slice().try_into().unwrap());
-    assert_eq! ( encapsulator2.as_bytes(), encapsulator.as_bytes());
+    let encapsulator2 = HybridKemQsfMlKem768P256::try_from_slice_encap(&pk).unwrap();
+    assert_eq! ( encapsulator2.get_recipient_public_key_bytes(), encapsulator.get_recipient_public_key_bytes());
 
     let (ct_calc4, ss_calc4) = encapsulator.encapsulate_deterministic(&randomness).unwrap();
     assert_eq!( ct_calc4.as_slice(), &ct);
@@ -315,7 +310,6 @@ fn test_draft_irtf_cfrg_hybrid_kems_03_example2 () {
 
 
 #[test]
-#[allow(non_snake_case)]
 fn test_draft_irtf_cfrg_hybrid_kems_03_example3 () 
 {
     let seed = hex!("22a96188d032675c8ac850933c7aff1533b94c834adbb69c6115bad4692d8619");
@@ -394,17 +388,17 @@ fn test_draft_irtf_cfrg_hybrid_kems_03_example3 ()
     ae712c9f5d");
     let ss = hex!("a268ec471cf13f7ddb07b62c505e3dfd30dedfaec332376c7fd8827ea2919c05");
     
-    let (encap, decap) = HybridKemQsfMlKem768P256::derive_from_seed(&seed.into());
-    assert_eq! ( encap.as_bytes().as_slice(), pk.as_slice());
-    assert_eq! ( decap.as_seed_bytes().unwrap(), sk);
+    let (encap, decap) = HybridKemQsfMlKem768P256::generate_deterministic(&seed.into()).unwrap();
+    assert_eq! ( encap.get_recipient_public_key_bytes(), pk.as_slice());
+    assert_eq! ( decap.to_bytes(), sk);
 
     let (ct_calc4, ss_calc4) = encap.encapsulate_deterministic(&randomness).unwrap();
 
     assert_eq!( ct_calc4.as_slice(), &ct);
     assert_eq!( ss_calc4.as_slice(), ss);
 
-    let pk2 = GenericArray::from_slice(pk.as_slice());
-    let encapsulator = <HybridKemQsfMlKem768P256 as Capsulator>::Encapsulator::from_bytes(pk2);
+    //let pk2 = GenericArray::from_slice(pk.as_slice());
+    let encapsulator = HybridKemQsfMlKem768P256::try_from_slice_encap(&pk).unwrap();
 
     let (ct_calc4, ss_calc4) = encapsulator.encapsulate_deterministic(&randomness).unwrap();
     assert_eq!( ct_calc4.as_slice(), &ct);
@@ -419,7 +413,6 @@ fn test_draft_irtf_cfrg_hybrid_kems_03_example3 ()
 
 //11.2. KitchenSink-KEM(ML-KEM-768,X25519)-XOF(SHAKE256)-KDF(HKDF-SHA-256) Test Vectors
 #[test]
-#[allow(non_snake_case)]
 fn test_draft_irtf_cfrg_hybrid_kems_03_example4 () {
     let seed = hex!("7f9c2ba4e88f827d616045507605853ed73b8093f6efbc88eb1a6eacfa66ef26");
     let sk = hex!("7f9c2ba4e88f827d616045507605853ed73b8093f6efbc88eb1a6eacfa66ef26");
@@ -496,16 +489,16 @@ fn test_draft_irtf_cfrg_hybrid_kems_03_example4 () {
         e6fb2e15");
     let ss = hex!("7638d1bbf82029472953eca0c539c7aa4929aef3ec8c6ff6d01e692e1efff79d");
   
-    let (encap, decap) = HybridCapsulatorKitchenSinkMlKem768X25519::derive_from_seed(&seed.into());
-    assert_eq! ( encap.as_bytes().as_slice(), pk.as_slice());
-    assert_eq! ( decap.as_seed_bytes().unwrap(), sk);
+    let (encap, decap) = HybridCapsulatorKitchenSinkMlKem768X25519::generate_deterministic(&seed.into()).unwrap();
+    assert_eq! ( encap.get_recipient_public_key_bytes(), pk.as_slice());
+    assert_eq! ( decap.to_bytes(), sk);
     
     let (ct_calc3, ss_calc3) = encap.encapsulate_deterministic(&randomness).unwrap();
     assert_eq!( ct_calc3.as_slice(), ct.as_slice());
     assert_eq!( ss_calc3.as_slice(), ss.as_slice());
 
-    let pk2 = GenericArray::from_slice(pk.as_slice());
-    let encapsulator = <HybridCapsulatorKitchenSinkMlKem768X25519 as Capsulator>::Encapsulator::from_bytes(pk2);
+    //let pk2 = GenericArray::from_slice(pk.as_slice());
+    let encapsulator = HybridCapsulatorKitchenSinkMlKem768X25519::try_from_slice_encap(&pk).unwrap();
 
     let (ct_calc4, ss_calc4) = encapsulator.encapsulate_deterministic(&randomness).unwrap();
     assert_eq!( ct_calc4.as_slice(), &ct);
@@ -516,7 +509,6 @@ fn test_draft_irtf_cfrg_hybrid_kems_03_example4 () {
 }
 
 #[test]
-#[allow(non_snake_case)]
 fn test_draft_irtf_cfrg_hybrid_kems_03_example5 () {
     let seed  = hex!(" badfd6dfaac359a5efbb7bcc4b59d538df9a04302e10c8bc1cbf1a0b3a5120ea");
     let sk = hex!("   badfd6dfaac359a5efbb7bcc4b59d538df9a04302e10c8bc1cbf1a0b3a5120ea");
@@ -593,9 +585,9 @@ fn test_draft_irtf_cfrg_hybrid_kems_03_example5 () {
         ea155b67");
     let ss = hex!("aeda5ce2b33f7852f32dd1b364280489524ee564ca9adaa3e54d8926d94e4e98");
 
-    let (encap, decap) = HybridCapsulatorKitchenSinkMlKem768X25519::derive_from_seed(&seed.into());
-    assert_eq! ( encap.as_bytes().as_slice(), pk.as_slice());
-    assert_eq! ( decap.as_seed_bytes().unwrap(), sk);
+    let (encap, decap) = HybridCapsulatorKitchenSinkMlKem768X25519::generate_deterministic(&seed.into()).unwrap();
+    assert_eq! ( encap.get_recipient_public_key_bytes(), pk.as_slice());
+    assert_eq! ( decap.to_bytes(), sk);
 
     let (ct_calc3, ss_calc3) = encap.encapsulate_deterministic(&randomness).unwrap();
     assert_eq!( ct_calc3.as_slice(), ct.as_slice());
@@ -604,8 +596,8 @@ fn test_draft_irtf_cfrg_hybrid_kems_03_example5 () {
     let ss_calc5 = decap.decapsulate(&ct_calc3).unwrap();
     assert_eq!( ss_calc5.as_slice(), ss);
 
-    let pk2 = GenericArray::from_slice(pk.as_slice());
-    let encapsulator = <HybridCapsulatorKitchenSinkMlKem768X25519 as Capsulator>::Encapsulator::from_bytes(pk2);
+    //let pk2 = GenericArray::from_slice(pk.as_slice());
+    let encapsulator = HybridCapsulatorKitchenSinkMlKem768X25519::try_from_slice_encap(&pk).unwrap();
     let (ct_calc4, ss_calc4) = encapsulator.encapsulate_deterministic(&randomness).unwrap();
 
     assert_eq!( ct_calc4.as_slice(), &ct);
@@ -614,7 +606,6 @@ fn test_draft_irtf_cfrg_hybrid_kems_03_example5 () {
 
 
 #[test]
-#[allow(non_snake_case)]
 fn test_draft_irtf_cfrg_hybrid_kems_03_example6 () {
     let seed = hex!("ef58538b8d23f87732ea63b02b4fa0f4873360e2841928cd60dd4cee8cc0d4c9");
     let sk = hex!("ef58538b8d23f87732ea63b02b4fa0f4873360e2841928cd60dd4cee8cc0d4c9");
@@ -691,9 +682,9 @@ fn test_draft_irtf_cfrg_hybrid_kems_03_example6 () {
         61137334");
     let ss = hex!("172835e85601f25be0beb40d7350e2f85117bf71c7d2ca55604401dbe4ab6f96");
 
-    let (encap, decap) = HybridCapsulatorKitchenSinkMlKem768X25519::derive_from_seed(&seed.into());
-    assert_eq! ( encap.as_bytes().as_slice(), pk.as_slice());
-    assert_eq! ( decap.as_seed_bytes().unwrap(), sk);
+    let (encap, decap) = HybridCapsulatorKitchenSinkMlKem768X25519::generate_deterministic(&seed.into()).unwrap();
+    assert_eq! ( encap.get_recipient_public_key_bytes(), pk.as_slice());
+    assert_eq! ( decap.to_bytes(), sk);
 
     let ( ct_calc3, ss_calc3) = encap.encapsulate_deterministic(&randomness).unwrap();
     assert_eq!( ct_calc3.as_slice(), &ct);
@@ -702,9 +693,8 @@ fn test_draft_irtf_cfrg_hybrid_kems_03_example6 () {
     let ss_calc5 = decap.decapsulate(&ct_calc3).unwrap();
     assert_eq!( ss_calc5, ss);
 
-    
-    let pk2 = GenericArray::from_slice(pk.as_slice());
-    let encapsulator = <HybridCapsulatorKitchenSinkMlKem768X25519 as Capsulator>::Encapsulator::from_bytes(pk2);
+    //let pk2 = GenericArray::from_slice(pk.as_slice());
+    let encapsulator = HybridCapsulatorKitchenSinkMlKem768X25519::try_from_slice_encap(&pk).unwrap();
     let (ct_calc4, ss_calc4) = encapsulator.encapsulate_deterministic(&randomness).unwrap();
 
     assert_eq!( ct_calc4.as_slice(), &ct);
@@ -718,7 +708,6 @@ fn test_draft_irtf_cfrg_hybrid_kems_03_example6 () {
 //11.3. QSF-KEM(ML-KEM-1024,P-384)-XOF(SHAKE256)-KDF(SHA3-256) Test Vectors
 
 #[test]
-#[allow(non_snake_case)]
 fn test_draft_irtf_cfrg_hybrid_kems_03_example7 () {
     let seed = hex!("7f9c2ba4e88f827d616045507605853ed73b8093f6efbc88eb1a6eacfa66ef26");
     let sk= hex!("7f9c2ba4e88f827d616045507605853ed73b8093f6efbc88eb1a6eacfa66ef26");
@@ -821,12 +810,12 @@ fn test_draft_irtf_cfrg_hybrid_kems_03_example7 () {
 
     let ss = hex!("fc8537e9ee77cc9f8cb925b9b6754654b6ea6f4a14b480a6ba91b83158e53b59");
 
-    let (encap, decap) = HybridCapsulatorQsfMlKem1024P384::derive_from_seed(&seed.into());
-    assert_eq! ( encap.as_bytes().as_slice(), &pk);
-    assert_eq! ( decap.as_seed_bytes().unwrap(), sk);
+    let (encap, decap) = HybridCapsulatorQsfMlKem1024P384::generate_deterministic(&seed.into()).unwrap();
+    assert_eq! ( encap.get_recipient_public_key_bytes(), pk.as_slice());
+    assert_eq! ( decap.to_bytes(), sk);
 
-    let pk2 = GenericArray::from_slice(pk.as_slice());
-    let encapsulator = <HybridCapsulatorQsfMlKem1024P384 as Capsulator>::Encapsulator::from_bytes(pk2);
+    //let pk2 = GenericArray::from_slice(pk.as_slice());
+    let encapsulator = HybridCapsulatorQsfMlKem1024P384::try_from_slice_encap(&pk).unwrap();
 
     let (ct_calc3, ss_calc3) = encapsulator.encapsulate_deterministic(&randomness).unwrap();
     assert_eq!( ct_calc3.as_slice(), &ct);
@@ -841,7 +830,6 @@ fn test_draft_irtf_cfrg_hybrid_kems_03_example7 () {
 // {
 
 #[test]
-#[allow(non_snake_case)]
 fn test_draft_irtf_cfrg_hybrid_kems_03_example8() {
     let seed = hex!("23474d368ccca8af0007cd9f5e4c849f167a580b14aabdefaee7eef47cb0fca9");
     let sk = hex!("23474d368ccca8af0007cd9f5e4c849f167a580b14aabdefaee7eef47cb0fca9");
@@ -943,11 +931,11 @@ fn test_draft_irtf_cfrg_hybrid_kems_03_example8() {
         34305b73f83147912980758b390070b7931117f97833a3d7fc92b7552ecf4765ec");
     let ss = hex!("74d4556ed0a3709c07dd6044e15b676ead0056fda00c4adde241e7eb0eacb216");
 
-    let (encapsulator, decapsulator) = HybridCapsulatorQsfMlKem1024P384::derive_from_seed(&seed.into());
-    assert_eq! ( encapsulator.as_bytes().as_slice(), pk.as_slice());
-    assert_eq! ( decapsulator.as_seed_bytes().unwrap().as_slice(), sk);
+    let (encapsulator, decapsulator) = HybridCapsulatorQsfMlKem1024P384::generate_deterministic(&seed.into()).unwrap();
+    assert_eq! ( encapsulator.get_recipient_public_key_bytes(), pk.as_slice());
+    assert_eq! ( decapsulator.to_bytes(), sk);
     
-    let encapsulator2 = <HybridCapsulatorQsfMlKem1024P384 as Capsulator>::Encapsulator::from_bytes(pk.as_slice().try_into().unwrap());
+    let encapsulator2 = HybridCapsulatorQsfMlKem1024P384::try_from_slice_encap(&pk).unwrap();
     let (ct_calc3, ss_calc3) = encapsulator2.encapsulate_deterministic(&randomness).unwrap();
 
     assert_eq!( ct_calc3.as_slice(), &ct);
@@ -960,7 +948,6 @@ fn test_draft_irtf_cfrg_hybrid_kems_03_example8() {
 
 
 #[test]
-#[allow(non_snake_case)]
 fn test_draft_irtf_cfrg_hybrid_kems_03_example9() 
 {
     let seed = hex!("2801f2f4b3f70c593ea3aeeb613a7f1b1de33fd75081f592305f2e4526edc096");
@@ -1063,13 +1050,13 @@ fn test_draft_irtf_cfrg_hybrid_kems_03_example9()
         75d6ebbadf14b9bb9da4dc455773ec8a9902f227313247cd7dcb0784049664d286");
     let ss = hex!("ae2cfb0ea52f32a555a49b5f4107dfd0e459008538a2bac85a0e47c5dfa97645");
 
-    let (encapsulator, decapsulator) = HybridCapsulatorQsfMlKem1024P384::derive_from_seed(&seed.into());
+    let (encapsulator, decapsulator) = HybridCapsulatorQsfMlKem1024P384::generate_deterministic(&seed.into()).unwrap();
 
-    assert_eq!( encapsulator.as_bytes().as_slice(), pk.as_slice());
-    assert_eq!( decapsulator.as_seed_bytes().unwrap().as_slice(), sk.as_slice());
+    assert_eq!( encapsulator.get_recipient_public_key_bytes(), pk.as_slice());
+    assert_eq!( decapsulator.to_bytes(), sk);
 
-    let pk2 = GenericArray::from_slice(pk.as_slice());
-    let encapsulator2 = <HybridCapsulatorQsfMlKem1024P384 as Capsulator>::Encapsulator::from_bytes(pk2);
+    //let pk2 = GenericArray::from_slice(pk.as_slice());
+    let encapsulator2 = HybridCapsulatorQsfMlKem1024P384::try_from_slice_encap(&pk).unwrap();
 
     let (ct_calc3, ss_calc3) = encapsulator2.encapsulate_deterministic(&randomness).unwrap();
     assert_eq!( ct_calc3.as_slice(), &ct);

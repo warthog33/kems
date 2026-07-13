@@ -1,11 +1,8 @@
 use hex_literal::hex;
-use kems::{Capsulator, xwing::XwingMlKem768X25519};
-use kems::GenerateCapsulatorFromSeed;
-use kems::EncodedSizeUser2;
-use kems::EncapsulateDeterministic2;
-use kems::Array;
-use kems::Decapsulate;
-use kems::EncodeSeed;
+use elliptic_curve::common::KeyExport;
+use kems::{Capsulator, Decapsulate,  GetRecipientPublicKeyBytes};
+use kems::{GenerateDeterministic3,EncapsulateDeterministic2,Array};
+use kems::xwing::XwingMlKem768X25519;
 
 /// Test from rfc https://datatracker.ietf.org/doc/draft-connolly-cfrg-xwing-kem/
 #[test]
@@ -85,11 +82,11 @@ fn test_xwing_example_1 () {
         e6fb2e15");
     let ss = hex!("d2df0522128f09dd8e2c92b1e905c793d8f57a54c3da25861f10bf4ca613e384");
 
-    let (encapsulator_rng, decapsulator_rng) = XwingMlKem768X25519::derive_from_seed(&Array::try_from(seed.as_slice()).unwrap());
-    assert_eq! ( pk.as_slice(), encapsulator_rng.as_bytes().as_slice());
-    assert_eq! ( decapsulator_rng.as_seed_bytes().unwrap(), sk);
+    let (encapsulator_rng, decapsulator_rng) = XwingMlKem768X25519::generate_deterministic(&Array::try_from(seed.as_slice()).unwrap()).unwrap();
+    assert_eq! ( encapsulator_rng.get_recipient_public_key_bytes(), pk.as_slice());
+    assert_eq! ( decapsulator_rng.to_bytes(), sk);
     
-    let encapsulator2 = <XwingMlKem768X25519 as Capsulator>::Encapsulator::from_bytes(pk.as_slice().try_into().unwrap());
+    let encapsulator2 = XwingMlKem768X25519::try_from_slice_encap(&pk).unwrap();
     
     let (ek3, ss3) = encapsulator2.encapsulate_deterministic(&eseed).unwrap();
     assert_eq! ( ek3.as_slice(), &ct);
@@ -180,12 +177,12 @@ fn test_xwing_example_2()
         ea155b67");
     let ss = hex!("f2e86241c64d60f6649fbc6c5b7d17180b780a3f34355e64a85749949c45f150");
 
-    let (encap, decap) = XwingMlKem768X25519::derive_from_seed(&Array::try_from(seed.as_slice()).unwrap());
-    assert_eq!(encap.as_bytes().as_slice(), pk.as_slice());
-    assert_eq!(decap.as_seed_bytes().unwrap(), sk);
+    let (encap, decap) = XwingMlKem768X25519::generate_deterministic(&seed.into()).unwrap();
+    assert_eq!(encap.get_recipient_public_key_bytes(), pk.as_slice());
+    assert_eq!(decap.to_bytes(), sk);
 
-    let encapsulator2 = <XwingMlKem768X25519 as Capsulator>::Encapsulator::from_bytes(pk.as_slice().try_into().unwrap());
-    assert_eq!( encapsulator2.as_bytes(), encap.as_bytes());
+    let encapsulator2 = XwingMlKem768X25519::try_from_slice_encap(&pk).unwrap();
+    assert_eq!( encapsulator2.get_recipient_public_key_bytes(), encap.get_recipient_public_key_bytes());
   
     let (ek3, ss3) = encapsulator2.encapsulate_deterministic(&eseed).unwrap();
     assert_eq! ( ek3.as_slice(), &ct);
@@ -275,12 +272,12 @@ fn test_xwing_example_3()
         61137334");
     let ss = hex!("953f7f4e8c5b5049bdc771d1dffada0dd961477d1a2ae0988baa7ea6898d893f");
 
-    let (encap, decap) = XwingMlKem768X25519::derive_from_seed(&seed.into());
-    assert_eq!(encap.as_bytes().as_slice(), pk.as_slice());
-    assert_eq!(decap.as_seed_bytes().unwrap(), sk);
+    let (encap, decap) = XwingMlKem768X25519::generate_deterministic(&seed.into()).unwrap();
+    assert_eq!(encap.get_recipient_public_key_bytes(), pk.as_slice());
+    assert_eq!(decap.to_bytes(), sk);
 
-    let encap2 = <XwingMlKem768X25519 as Capsulator>::Encapsulator::from_bytes(pk.as_slice().try_into().unwrap());
-    assert_eq!(encap2.as_bytes(), encap.as_bytes());
+    let encap2 = XwingMlKem768X25519::try_from_slice_encap(&pk).unwrap();//.as_slice().try_into().unwrap());
+    assert_eq!(encap2.get_recipient_public_key_bytes(), encap.get_recipient_public_key_bytes());
 
     let (ct5,ss5) = encap2.encapsulate_deterministic(&eseed).unwrap();
     assert_eq!( ss5, ss);

@@ -1,25 +1,14 @@
 use base64::{Engine, prelude::BASE64_STANDARD};
-use generic_array::GenericArray;
-use kems::{Array, ml_kem::MlKemWrapper};
-use ml_kem::MlKem768;
-use serde_json::Value;
-use kems::GenerateCapsulatorFromSeed;
-use kems::Decapsulate;
-use kems::Capsulator;
-use kems::EncodedSizeUser2;
-use kems::Encapsulate;
-use kems::draft_ietf_lamps_pq_composite_kem_07::HybridKemMlKem768P256Sha3_256;
-use kems::draft_ietf_lamps_pq_composite_kem_07::HybridKemMlkem768Rsa2048HmacSha256;
-use kems::draft_ietf_lamps_pq_composite_kem_07::HybridKemMlkem768Rsa3072HmacSha256;
-use kems::OsRng;
-use kems::draft_ietf_lamps_pq_composite_kem_07::HybridKemMlKem768P384Sha3_256;
-use kems::draft_ietf_lamps_pq_composite_kem_07::HybridKemMlkem1024Rsa3072HmacSha512;
-use kems::draft_ietf_lamps_pq_composite_kem_07::HybridKemMlKem1024P384Sha3_256;
-use p384::NistP384;
-use kems::draft_ietf_lamps_pq_composite_kem_07::HybridKemMlKem1024X448Sha3_256;
-use kems::draft_ietf_lamps_pq_composite_kem_07::HybridKemMlKem1024P521Sha3_256;
-use p521::NistP521;
 
+use cipher::common::KeyExport;
+use generic_array::GenericArray;
+use generic_array::typenum::Unsigned;
+use kems::mlkem::{WrappedMlKem768,WrappedMlKem1024};
+use kems::{Array, Capsulator, Decapsulate, Encapsulate, GenerateDeterministic3, OsRng, GetRecipientPublicKeyBytes};
+use kems::draft_ietf_lamps_pq_composite_kem_07::{HybridKemMlKem768P256Sha3_256, HybridKemMlKem768X25519Sha3_256, HybridKemMlkem768BP256r1Sha3_256, HybridKemMlkem768Rsa2048HmacSha256, HybridKemMlkem768Rsa3072HmacSha256};
+use kems::draft_ietf_lamps_pq_composite_kem_07::{HybridKemMlKem768P384Sha3_256,HybridKemMlkem1024Rsa3072HmacSha512,HybridKemMlKem1024P384Sha3_256};
+use kems::draft_ietf_lamps_pq_composite_kem_07::{HybridKemMlKem1024X448Sha3_256,HybridKemMlKem1024P521Sha3_256, HybridKemMlkem768Rsa4096HmacSha256, HybridKemMlkem1024BP384r1Sha3_256};
+use serde_json::Value;
 
    
    
@@ -42,204 +31,78 @@ fn test_composition_ml_kem ()
     assert_eq!(decapsulation_key_vec.len(), 64);
     assert_eq!(ciphertext_vec.len(), 1088); // 
 
-    //let (priv_key, _pub_key) = MlKem768::generate_deterministic(&Array::try_from(&decapsulation_key[0..32]).unwrap(), &Array::try_from(&decapsulation_key[32..64]).unwrap());
-    // let mut pred_rng = PredictableRng::new(&decapsulation_key_vec);
-    // let (priv_key, pub_key) = MlKem768::generate(&mut pred_rng);
-
-    // assert_eq!(pub_key.as_bytes().as_slice(), encapsulation_key_vec.as_slice());
-    
-    // //let dk_pkcs8 = &BASE64_STANDARD.decode(test["dk_pkcs8"].as_str().unwrap()).unwrap();
-
-    
-    // // println! ( "ek=({}){:02X?}", ek.len(), ek);
-    // // println! ( "x5c=({}){:02X?}", x5c_cert_with_public_key.len(), x5c_cert_with_public_key);
-    // // println! ( "c=({}){:02X?}", ciphertext.len(), ciphertext);
-    // // println! ( "dk=({}){:02X?}", decapsulation_key.len(), decapsulation_key);
-
-    // let decapsulator = MlKemDecapsulator::<MlKem768, U32>::from_key(priv_key);
-    // //let decapsulator = MlKemDecapsulator::<MlKem768>::new(priv_key);
-    // //let encapped_key = MlKemEncapKey::<_,U32>::from_bytes(&GenericArray::from_slice(&ciphertext)).unwrap();
-    // let encapped_key = GenericArray::from_slice(&ciphertext_vec);
-    // let ss = decapsulator.decapsulate(&encapped_key).unwrap();
-
-    // assert_eq!( ss.as_slice(), derived_shared_secret.as_slice());
-
-    // let mut pred_rng = PredictableRng::new(&decapsulation_key_vec);
-    // let (encapsulator, decapsulator) = MlKemWithAddKeyDer::<MlKem768, U32, PassThroughKdf>::generate(&mut pred_rng);
-    let (encapsulator, decapsulator) = MlKemWrapper::<MlKem768>::derive_from_seed(&Array::try_from(decapsulation_key_vec.as_slice()).unwrap());
+    let (encapsulator, decapsulator) = WrappedMlKem768::generate_deterministic(&decapsulation_key_vec.as_slice().try_into().unwrap()).unwrap();
     let ss3 = decapsulator.decapsulate(GenericArray::from_slice(&ciphertext_vec)).unwrap();
 
     assert_eq!( ss3.as_slice(), derived_shared_secret.as_slice());
+    // println! ( "base_size={:?}", encapsulation_key_vec.as_slice().len());
+    // let d = Array::default();
+    // println! ( "input_size={:?}", d.len());
 
-    let encapsulator2 = MlKemWrapper::<MlKem768>::from_bytes_encap(&GenericArray::from_slice(encapsulation_key_vec.as_slice()));
-    assert!( encapsulator.as_bytes() ==  encapsulator2.as_bytes());
-    let (encapsulated_key, ss4) = encapsulator2.encapsulate(&mut rand_core::OsRng).unwrap();
+    let encapsulator2 = WrappedMlKem768::try_from_slice_encap(encapsulation_key_vec.as_slice()).unwrap();
+    // let encapsulator2 = WrappedMlKem768::from_bytes_encap(&d);
+    assert_eq!( encapsulator.to_bytes(), encapsulator2.to_bytes());
+
+    let (encapsulated_key, ss4) = encapsulator2.encapsulate(&mut OsRng).unwrap();
     let ss5 = decapsulator.decapsulate(&encapsulated_key).unwrap();
-    assert_eq!(ss4, ss5);
-
-    
+    assert_eq!(ss4, ss5);    
 }
 
 
 #[test]
 #[cfg(feature="rustcrypto-ml-kem")]
 fn test_composition_ml_kem_2 (){
-    use kems::ml_kem::MlKemWrapper;
-use ml_kem::MlKem1024;
+	let test_json : Value = serde_json::from_str(&JSON_TESTS.replace("\n","").replace(" ","")).unwrap();
+	let test = &test_json["tests"][1];
 
-   
-    let test_json : Value = serde_json::from_str(&JSON_TESTS.replace("\n","").replace(" ","")).unwrap();
-    let test = &test_json["tests"][1];
+	assert_eq! ( test["tcId"], "id-alg-ml-kem-1024") ;
+	let encapsulation_key_vec = &BASE64_STANDARD.decode(test["ek"].as_str().unwrap()).unwrap();
+	let decapsulation_key_vec = &BASE64_STANDARD.decode(test["dk"].as_str().unwrap()).unwrap();
+	let ciphertext_vec = &BASE64_STANDARD.decode(test["c"].as_str().unwrap()).unwrap();
+	let derived_shared_secret = &BASE64_STANDARD.decode(test["k"].as_str().unwrap()).unwrap();
+	//let x5c_cert_with_public_key = &BASE64_STANDARD.decode(test["x5c"].as_str().unwrap()).unwrap();
 
-    //println! ( "test[0]={:?}", test);
+	assert_eq!( decapsulation_key_vec.len(), 64);
+	assert_eq! ( encapsulation_key_vec.len(), 1568 );
+	assert_eq! ( ciphertext_vec.len(), <WrappedMlKem1024 as Capsulator>::CiphertextSize::USIZE); //1568 ); // 
 
-    assert_eq! ( test["tcId"], "id-alg-ml-kem-1024") ;
-    let encapsulation_key_vec = &BASE64_STANDARD.decode(test["ek"].as_str().unwrap()).unwrap();
-    let decapsulation_key_vec = &BASE64_STANDARD.decode(test["dk"].as_str().unwrap()).unwrap();
-    let ciphertext_vec = &BASE64_STANDARD.decode(test["c"].as_str().unwrap()).unwrap();
-    let derived_shared_secret = &BASE64_STANDARD.decode(test["k"].as_str().unwrap()).unwrap();
-    //let x5c_cert_with_public_key = &BASE64_STANDARD.decode(test["x5c"].as_str().unwrap()).unwrap();
-    
-    assert_eq!( decapsulation_key_vec.len(), 64);
-    assert_eq! ( encapsulation_key_vec.len(), 1568 );
-    assert_eq! ( ciphertext_vec.len(), 1568 ); // 
+	let (encapsulator, decapsulator) = WrappedMlKem1024::generate_deterministic(&Array::try_from(decapsulation_key_vec.as_slice()).unwrap()).unwrap();
+	let ss3 = decapsulator.decapsulate(GenericArray::from_slice(&ciphertext_vec)).unwrap();
+	assert_eq!( ss3.as_slice(), derived_shared_secret.as_slice());
 
-    //let (priv_key, _pub_key) = MlKem1024::generate_deterministic(&Array::try_from(&decapsulation_key[0..32]).unwrap(), &Array::try_from(&decapsulation_key[32..64]).unwrap());
-    //let mut pred_rng = PredictableRng::new(&decapsulation_key);
-    //let (priv_key, _pub_key) = MlKem1024::generate(&mut pred_rng);
-    // let dk3 = GenericArray::from_slice(decapsulation_key_vec.as_slice());
-    // let decapsulator = <MlKemDecapsulator::<MlKem1024,U32> as EncodedSizeUser2>::from_bytes(&dk3);
-    
-    // //let dk_pkcs8 = &BASE64_STANDARD.decode(test["dk_pkcs8"].as_str().unwrap()).unwrap();
-
-    // //let decapsulator = MlKemDecapsulator::<MlKemWrapper<MlKem1024>>::new(priv_key);
-
-    // //let decapsulator = MlKemDecapsulator::<MlKem1024>::new(priv_key);
-    
-    // //let encapped_key = MlKemEncapKey::<_,U32>::from_bytes(&GenericArray::from_slice(&ciphertext)).unwrap();
-
-    // //let ss = decapsulator.try_decap(&encapped_key).unwrap();
-    // let ct2 = GenericArray::from_slice(ciphertext_vec.as_slice());
-    // let ss = decapsulator.decapsulate(&ct2).unwrap();
-
-    // assert_eq!( ss.as_slice(), derived_shared_secret.as_slice());
-    
-    // let ek2 = GenericArray::from_slice(encapsulation_key_vec.as_slice());
-    // let encapsulator2 = <MlKemEncapsulator::<MlKem1024, U32> as EncodedSizeUser2>::from_bytes(&ek2);
-
-    // let (ct2, ss2): (GenericArray<_,_>,_) = encapsulator2.encapsulate(&mut OsRng).unwrap();
-
-    // let ss3 = decapsulator.decapsulate(&ct2).unwrap();
-
-    // assert_eq! ( ss2, ss3 );
-
-    //let (ct3, ss3) = encapsulator2.encapsulate(&mut OsRng).unwrap();
-    //let dk_bytes = hybrid_array::Array::try_from(decapsulation_key.as_slice()).unwrap();
-    // let dk_bytes = hybrid_array::Array::default();
-    // println! ( "len={}", dk_bytes.len());
-    // let decapsulator2 = MlKemDecapsulator::<MlKem1024>::from_bytes(&dk_bytes);
-    // let ss2 = decapsulator.decapsulate(&ct2).unwrap();
-
-    // assert_eq! ( ss2.as_slice(), derived_shared_secret.as_slice());
-
-    // let mut pred_rng = PredictableRng::new(&decapsulation_key_vec);
-    // let (encapsulator, decapsulator) = MlKemWithAddKeyDer::<MlKem1024, U32, PassThroughKdf>::generate(&mut pred_rng);
-    let (encapsulator, decapsulator) = MlKemWrapper::<MlKem1024>::derive_from_seed(&Array::try_from(decapsulation_key_vec.as_slice()).unwrap());
-    let ss3 = decapsulator.decapsulate(GenericArray::from_slice(&ciphertext_vec)).unwrap();
-
-    assert_eq!( ss3.as_slice(), derived_shared_secret.as_slice());
-
-    let encapsulator2 = MlKemWrapper::<MlKem1024>::from_bytes_encap(&GenericArray::from_slice(encapsulation_key_vec.as_slice()));
-    assert!( encapsulator.as_bytes() ==  encapsulator2.as_bytes());
-    let (encapsulated_key, ss4) = encapsulator2.encapsulate(&mut rand_core::OsRng).unwrap();
-    let ss5 = decapsulator.decapsulate(&encapsulated_key).unwrap();
-    assert_eq!(ss4, ss5);
-
-    
+	let encapsulator2 = WrappedMlKem1024::try_from_slice_encap(encapsulation_key_vec.as_slice()).unwrap();
+	assert!( encapsulator.to_bytes() ==  encapsulator2.to_bytes());
+	let (encapsulated_key, ss4) = encapsulator2.encapsulate(&mut rand_core::OsRng).unwrap();
+	let ss5 = decapsulator.decapsulate(&encapsulated_key).unwrap();
+	assert_eq!(ss4, ss5);
 }
 
-// struct RsaEncoder<L: cipher::ArrayLength<u8>> (PhantomData<L>);
-// impl<L: cipher::ArrayLength<u8>> EncodePublicKey<rsa::RsaPublicKey> for RsaEncoder <L>
-// {
-//     type EncodedLen = L;
-//     fn encode(public_key: &rsa::RsaPublicKey) -> GenericArray<u8, Self::EncodedLen> {
-//         let r = public_key.to_pkcs1_der().unwrap();
-//         let r2 = r.as_bytes();
-//         GenericArray::from_slice(r2).clone()
-//     }
-// }
 
 #[test]
-#[cfg(all(feature="rustcrypto-ml-kem", feature="rustcrypto-rsa", feature="rustcrypto-hmac", feature="rustcrypto-sha2"))]
 fn test_composition_ml_kem_3 (){
     
     let test_json : Value = serde_json::from_str(&JSON_TESTS.replace("\n","").replace(" ","")).unwrap();
     let test = &test_json["tests"][2];
 
-    println! ( "test[0]={:?}", test);
-
-    //assert_eq! ( test["tcId"], "id-MLKEM768-RSA2048-HMAC-SHA256") ;
     assert_eq! ( test["tcId"], "id-MLKEM768-RSA2048-SHA3-256") ;
     let encapsulation_key_vec = &BASE64_STANDARD.decode(test["ek"].as_str().unwrap()).unwrap();
     let decapsulation_key_vec = &BASE64_STANDARD.decode(test["dk"].as_str().unwrap()).unwrap();
     let ciphertext_vec = &BASE64_STANDARD.decode(test["c"].as_str().unwrap()).unwrap();
     let derived_shared_secret_vec = &BASE64_STANDARD.decode(test["k"].as_str().unwrap()).unwrap();
-    //let x5c_cert_with_public_key = &BASE64_STANDARD.decode(test["x5c"].as_str().unwrap()).unwrap();
     
     assert_eq!(encapsulation_key_vec.len(), 1454 );
     //assert_eq!(decapsulation_key_vec.len(), 1256);
     assert_eq!(ciphertext_vec.len(), 1344 ); // 
 
-    //let (priv_key_pqc, pub_key_pqc) = MlKem768::generate_deterministic(&Array::try_from(&decapsulation_key[0..32]).unwrap(), &Array::try_from(&decapsulation_key[32..64]).unwrap());
-    //let mut pred_rng = PredictableRng::new(&decapsulation_key);
-    //let ( priv_key_pqc, pub_key_pqc) = MlKem768::generate(&mut pred_rng);
-    
-    //let rsa_priv = &decapsulation_key[64..];
-    // let rsa_priv = rsa::RsaPrivateKey::from_pkcs8_der(&decapsulation_key_vec[64..]).unwrap();
-    // println! ( "rsa_priv={:02X?}", rsa_priv);
-    
-    //let dk_pkcs8 = &BASE64_STANDARD.decode(test["dk_pkcs8"].as_str().unwrap()).unwrap();
-    
-    
-    //type TradDecapsulator = RsaDecapsulator<U256,U32,Oaep2<Sha256,Sha256>,PassThroughKdf>;
-    //type TradEncapKey = RsaEncapKey<U256,U32>;
-    //let decapsulator = MlKemDecapsulator::<MlKemWrapper<MlKem768>>::new(priv_key_pqc);
-    // let hybrd_priv = HybridPrivateKey::<MlKem768,_,_>{pq_private_key: priv_key_pqc, 
-    //         pq_public_key: pub_key_pqc, ec_public_key: rsa_priv.to_public_key(), 
-    //         trad_private_key: kems::rsakem::RsaOaepKem2::new_decapsulator(rsa_priv), trad_public_key: kems::rsakem::RsaOaepKem::new_encapsulator()};
-    // //let decapsulator = HybridDecapsulator::<MlKem768,_,TradEncapKey,TradDecapsulator, KemCombiner<HkdfExtract<Hmac<Sha256>>, LabelMlKey768Rsa2048HmacSha256>>::new(hybrd_priv);
-    // let decapsulator = HybridKemMlkem768Rsa2048HmacSha256::new_decapsulator(hybrd_priv);
-
-    
-    // let hybrd_priv = HybridPrivateKey::<MlKem768,_,_>{pq_private_key: priv_key_pqc, pq_public_key: pub_key_pqc, ec_private_key: x25519_priv2.clone(), ec_public_key: x25519_dalek::PublicKey::from(&x25519_priv2)};
-    // let decapsulator = HybridDecapsulator::<MlKem768,_,LabelMlKey768X25519Sha3_256,TradEncapKey,TradDecapsulator, X25519Encoder,KemCombiner<Okdf3::<sha3::Sha3_256, u0>, LabelMlKey768X25519Sha3_256>>::new(hybrd_priv);
-
-
-    //type RSAKEM = kems::rsakem::RsaOaepKem2<U256,U32,sha2::Sha256,sha2::Sha256, U1218>;
-
-    //let decapsulator = HybridDecapsulator::<MlKem1024, _, LabelMlKem1024P384, EcEncapKeyCompressed<NistP384, U48>, EcdhDecapsulator<NistP384, KemKdfEcNoPubKeys<PassThroughKdf>, U48,false>, EcCompressedEncoder<_>, true >::new2(priv_key, pub_key);
-    // let encapped_key = HybridEncapKey::<MlKem768,RsaEncapKey<U256,U32>, RSAKEM>::from_bytes(&GenericArray::from_slice(&ciphertext)).unwrap();
-
-    // let ss = decapsulator.try_decap(&encapped_key).unwrap();
-
-    //assert_eq!( ss.as_bytes(), derived_shared_secret);
-    
     let ciphertext_ga = GenericArray::from_slice(&ciphertext_vec);
-    //let decapsulation_key_ga = GenericArray::from_slice(decapsulation_key_vec.as_ref());
-
-    //let decapsulator = HybridKemMlkem768Rsa2048HmacSha256::from_bytes_decap(decapsulation_key_ga);
     let decapsulator = <HybridKemMlkem768Rsa2048HmacSha256 as Capsulator>::Decapsulator::from_slice(decapsulation_key_vec).unwrap();
 
     let ss2 = decapsulator.decapsulate(ciphertext_ga).unwrap();
     assert_eq! ( ss2.as_slice(), derived_shared_secret_vec);
 
     // Do a full encap / decap cycle
-    //let encapsulation_key_ga = GenericArray::from_slice(encapsulation_key_vec.as_slice());
-    //let encapsulator = HybridKemMlkem768Rsa2048HmacSha256::from_bytes_encap(&encapsulation_key_ga);
-    let encapsulator = <HybridKemMlkem768Rsa2048HmacSha256 as Capsulator>::Encapsulator::from_slice(&encapsulation_key_vec).unwrap();
-
+    let encapsulator = HybridKemMlkem768Rsa2048HmacSha256::try_from_slice_encap(&encapsulation_key_vec).unwrap();
     let ( ct3, ss3) = encapsulator.encapsulate ( &mut rand_core::OsRng).unwrap();
-
     assert_eq! ( ct3.len(), ciphertext_vec.len());
 
     let ss4 = decapsulator.decapsulate(&ct3).unwrap();
@@ -248,145 +111,57 @@ fn test_composition_ml_kem_3 (){
 }
 
 #[test]
-#[cfg(all(feature = "rustcrypto-rsa", feature = "rustcrypto-ml-kem", feature = "rustcrypto-sha2", feature = "rustcrypto-hmac"))]
 fn test_composition_ml_kem_4 (){
-
-    
-   
     let test_json : Value = serde_json::from_str(&JSON_TESTS.replace("\n","").replace(" ","")).unwrap();
     let test = &test_json["tests"][3];
 
-    println! ( "test[0]={:?}", test);
-
     assert_eq! ( test["tcId"], "id-MLKEM768-RSA3072-SHA3-256") ;
     let encapsulation_key = &BASE64_STANDARD.decode(test["ek"].as_str().unwrap()).unwrap();
-    assert_eq! ( encapsulation_key.len(), 1582 );
-    //let x5c_cert_with_public_key = &BASE64_STANDARD.decode(test["x5c"].as_str().unwrap()).unwrap();
     let decapsulation_key = &BASE64_STANDARD.decode(test["dk"].as_str().unwrap()).unwrap();
-    assert_eq!( decapsulation_key.len(), 1831);
-    //let (priv_key_pqc, pub_key_pqc) = MlKem768::generate_deterministic(&Array::try_from(&decapsulation_key[0..32]).unwrap(), &Array::try_from(&decapsulation_key[32..64]).unwrap());
-    //let mut pred_rng = PredictableRng::new(&decapsulation_key);
-    //let (priv_key_pqc,pub_key_pqc ) = MlKem768::generate(&mut pred_rng);
-    
-    //let rsa_priv = &decapsulation_key[64..];
-    //let rsa_priv = rsa::RsaPrivateKey::from_pkcs8_der(&decapsulation_key[64..]).unwrap();
-    //println! ( "rsa_priv={:02X?}", rsa_priv);
-    
-    //let dk_pkcs8 = &BASE64_STANDARD.decode(test["dk_pkcs8"].as_str().unwrap()).unwrap();
-    let ciphertext = &BASE64_STANDARD.decode(test["c"].as_str().unwrap()).unwrap();
-    assert_eq! ( ciphertext.len(), 1472 ); // 
-
+	let ciphertext = &BASE64_STANDARD.decode(test["c"].as_str().unwrap()).unwrap();
     let derived_shared_secret = &BASE64_STANDARD.decode(test["k"].as_str().unwrap()).unwrap();
 
-    //type TradDecapsulator = RsaDecapsulator<U384,U32,Oaep2<Sha256,Sha256>,PassThroughKdf>;
-    //type TradEncapKey = RsaEncapKey<U384,U32>;
-    
-    //let decapsulator = MlKemDecapsulator::<MlKemWrapper<MlKem768>>::new(priv_key_pqc);
-    // let hybrd_priv = HybridPrivateKey::<MlKem768,_,_>{pq_private_key: priv_key_pqc, pq_public_key: pub_key_pqc,
-    //      ec_public_key: rsa_priv.to_public_key(), trad_private_key: RsaOaepKem2::new_decapsulator(rsa_priv), trad_public_key: RsaOaepKem::new_encapsulator()};
-    //let decapsulator = HybridDecapsulator::<MlKem768,_,TradEncapKey,TradDecapsulator, KemCombiner<HkdfExtract<Hmac<Sha256>>, LabelMlKey768Rsa3072HmacSha256>>::new(hybrd_priv);
-    //let decapsulator = HybridKemMlkem768Rsa3072HmacSha256::new_decapsulator(hybrd_priv);
-    //let decapsulator = HybridDecapsulator::<MlKem1024, _, LabelMlKem1024P384, EcEncapKeyCompressed<NistP384, U48>, EcdhDecapsulator<NistP384, KemKdfEcNoPubKeys<PassThroughKdf>, U48,false>, EcCompressedEncoder<_>, true >::new2(priv_key, pub_key);
-    //let encapped_key = HybridEncapKey::<MlKem768,RsaEncapKey<U384,U32>,_>::from_bytes(&GenericArray::from_slice(&ciphertext)).unwrap();
+	assert_eq! ( encapsulation_key.len(), 1582 );
+	assert_eq!( decapsulation_key.len(), 1831);
+	assert_eq! ( ciphertext.len(), 1472 ); // 
 
-    //let ss = decapsulator.try_decap(&encapped_key).unwrap();
-
-    //assert_eq!( ss.as_bytes(), derived_shared_secret);
-    
-    //let decap_key_as_ga = GenericArray::from_slice(decapsulation_key.as_ref());
-    // println! ("provided = {}", decapsulation_key.len());
-    // let decap_key_as_ga = &GenericArray::default();
-    // println! ( "expected = {}", decap_key_as_ga.len());
     let decapsulator = <HybridKemMlkem768Rsa3072HmacSha256 as Capsulator>::Decapsulator::from_slice(decapsulation_key).unwrap();
 
     let ct2 = GenericArray::from_slice(&ciphertext);
     let ss2 = decapsulator.decapsulate(ct2).unwrap();
     assert_eq! ( ss2.as_slice(), derived_shared_secret);
 
-    //let encap_key_as_ga = GenericArray::from_slice(encapsulation_key.as_ref());
-    //let encapsulator = <HybridKemMlkem768Rsa3072HmacSha256 as Capsulator>::Encapsulator::from_bytes(encap_key_as_ga);
-    let encapsulator = <HybridKemMlkem768Rsa3072HmacSha256 as Capsulator>::Encapsulator::from_slice(encapsulation_key).unwrap();
-    
+    let encapsulator = <HybridKemMlkem768Rsa3072HmacSha256 as Capsulator>::Encapsulator::try_from(encapsulation_key.as_slice()).unwrap();
     let (ct3, ss3) = encapsulator.encapsulate(&mut OsRng).unwrap();
     let ss4 = decapsulator.decapsulate(&ct3).unwrap();
     assert_eq! ( ss3, ss4);
-
-
-    
 }
 
 #[test]
-#[cfg(all(feature="rustcrypto-ml-kem", feature="rustcrypto-rsa", feature="rustcrypto-hmac", feature="rustcrypto-sha3"))]
-fn test_composition_ml_kem_5 (){
-    use kems::draft_ietf_lamps_pq_composite_kem_07::HybridKemMlkem768Rsa4096HmacSha256;
-
-   
+fn test_composition_ml_kem_5 (){   
     let test_json : Value = serde_json::from_str(&JSON_TESTS.replace("\n","").replace(" ","")).unwrap();
     let test = &test_json["tests"][4];
 
-    //println! ( "test[0]={:?}", test);
-
     assert_eq! ( test["tcId"], "id-MLKEM768-RSA4096-SHA3-256") ;
     let encapsulation_key = &BASE64_STANDARD.decode(test["ek"].as_str().unwrap()).unwrap();
-    assert_eq! ( encapsulation_key.len(), 1710 );
     //let x5c_cert_with_public_key = &BASE64_STANDARD.decode(test["x5c"].as_str().unwrap()).unwrap();
     let decapsulation_key = &BASE64_STANDARD.decode(test["dk"].as_str().unwrap()).unwrap();
-    assert_eq!( decapsulation_key.len(), 2412);
     let ciphertext = &BASE64_STANDARD.decode(test["c"].as_str().unwrap()).unwrap();
-    assert_eq! ( ciphertext.len(), 1600 ); // 
     let derived_shared_secret = &BASE64_STANDARD.decode(test["k"].as_str().unwrap()).unwrap();
 
-    //let (priv_key_pqc, pub_key_pqc) = MlKem768::generate_deterministic(&Array::try_from(&decapsulation_key[0..32]).unwrap(), &Array::try_from(&decapsulation_key[32..64]).unwrap());
-    //let mut pred_rng = PredictableRng::new(&decapsulation_key);
-    //let (priv_key_pqc, pub_key_pqc ) = MlKem768::generate(&mut pred_rng);
-    
-    //let rsa_priv = &decapsulation_key[64..];
-    //let rsa_priv = rsa::RsaPrivateKey::from_pkcs8_der(&decapsulation_key[64..]).unwrap();
-    //println! ( "rsa_priv={:02X?}", rsa_priv);
-    
-    //let dk_pkcs8 = &BASE64_STANDARD.decode(test["dk_pkcs8"].as_str().unwrap()).unwrap();
-    
+	assert_eq! ( encapsulation_key.len(), 1710 );
+    assert_eq!( decapsulation_key.len(), 2412);
+    assert_eq! ( ciphertext.len(), 1600 ); // 
 
-    //type TradDecapsulator = RsaDecapsulator<U512,U32,Oaep2<Sha256,Sha256>,PassThroughKdf>;
-    //type TradEncapKey = RsaEncapKey<U512,U32>;
-    
-    //let decapsulator = MlKemDecapsulator::<MlKemWrapper<MlKem768>>::new(priv_key_pqc);
-    //let hybrd_priv = HybridPrivateKey::<MlKem768,_,_>{pq_private_key: priv_key_pqc, pq_public_key: pub_key_pqc, ec_private_key: rsa_priv, ec_public_key: rsa_priv.to_public_key()};
-    //let decapsulator = HybridDecapsulator::<MlKem768,_,LabelMlKem768X25519,_,TradDecapsulator, _,true>::new(hybrd_priv);
-    //let decapsulator = HybridDecapsulator::<MlKem1024, _, LabelMlKem1024P384, EcEncapKeyCompressed<NistP384, U48>, EcdhDecapsulator<NistP384, KemKdfEcNoPubKeys<PassThroughKdf>, U48,false>, EcCompressedEncoder<_>, true >::new2(priv_key, pub_key);
-    // let hybrd_priv = HybridPrivateKey::<MlKem768,_,_>{pq_private_key: priv_key_pqc, pq_public_key: pub_key_pqc, 
-    //      ec_public_key: rsa_priv.to_public_key(),
-    //     trad_private_key: RsaOaepKem2::new_decapsulator(rsa_priv), trad_public_key: RsaOaepKem2::<_,_,_,_,U2373>::new_encapsulator()};
-    // //let decapsulator = HybridDecapsulator::<MlKem768,_,TradEncapKey,TradDecapsulator, KemCombiner<HkdfExtract<Hmac<Sha256>>, LabelMlKey768Rsa4096HmacSha256>>::new(hybrd_priv);
-    // let decapsulator = HybridKemMlkem768Rsa4096HmacSha256::new_decapsulator(hybrd_priv);
-
-    // type RSAKEM = kems::rsakem::RsaOaepKem2<U512,U32,sha2::Sha256,sha2::Sha256,U2373>;
-
-    // let encapped_key = HybridEncapKey::<MlKem768,RsaEncapKey<U512,U32>, RSAKEM>::from_bytes(&GenericArray::from_slice(&ciphertext)).unwrap();
-
-    // let ss = decapsulator.try_decap(&encapped_key).unwrap();
-
-    // assert_eq!( ss.as_bytes(), derived_shared_secret);
-    
-    
-    //let decap_key_as_ga = GenericArray::from_slice(decapsulation_key.as_slice());
     let decapsulator = <HybridKemMlkem768Rsa4096HmacSha256 as Capsulator>::Decapsulator::from_slice(decapsulation_key).unwrap();
 
+	// Decapsulate
     let ct2 = GenericArray::from_slice(&ciphertext);
     let ss2 = decapsulator.decapsulate(ct2).unwrap();
     assert_eq! ( ss2.as_slice(), derived_shared_secret);
 
-    //let encap_key_as_ga = GenericArray::from_slice(encapsulation_key.as_slice());
-
-    //println! ("provided = {}", encapsulation_key.len());
-    //let encap_key_as_ga = &hybrid_array::Array::try_from(encapsulation_key.as_slice()).unwrap();
-    //let encap_key_as_ga = GenericArray::default();
-    //let encap_key_as_ga = GenericArray::from_slice(&encapsulation_key.as_slice());
-    //println! ( "expected = {}", encap_key_as_ga.len());
-        
-    //let encapsulator = <HybridKemMlkem768Rsa4096HmacSha256 as Capsulator>::Encapsulator::from_bytes(&encap_key_as_ga);
-    let encapsulator = <HybridKemMlkem768Rsa4096HmacSha256 as Capsulator>::Encapsulator::from_slice(&encapsulation_key).unwrap();
-
+	// Encapsulate, then decapsulate
+    let encapsulator = HybridKemMlkem768Rsa4096HmacSha256::try_from_slice_encap(&encapsulation_key).unwrap();
     let (ct3, ss3) = encapsulator.encapsulate(&mut OsRng).unwrap();
     let ss4 = decapsulator.decapsulate(&ct3).unwrap();
 
@@ -396,11 +171,7 @@ fn test_composition_ml_kem_5 (){
 
 
 #[test]
-#[cfg(feature="rustcrypto-sha3")]
-fn test_composition_ml_kem_6 (){
-    use kems::draft_ietf_lamps_pq_composite_kem_07::HybridKemMlKem768X25519Sha3_256;
-
-   
+fn test_composition_ml_kem_6 (){   
     let test_json : Value = serde_json::from_str(&JSON_TESTS.replace("\n","").replace(" ","")).unwrap();
     let test = &test_json["tests"][5];
 
@@ -408,47 +179,27 @@ fn test_composition_ml_kem_6 (){
 
     assert_eq! ( test["tcId"], "id-MLKEM768-X25519-SHA3-256") ;
     let encapsulation_key = &BASE64_STANDARD.decode(test["ek"].as_str().unwrap()).unwrap();
-    assert_eq! ( encapsulation_key.len(), 1216 );
     //let x5c_cert_with_public_key = &BASE64_STANDARD.decode(test["x5c"].as_str().unwrap()).unwrap();
     let decapsulation_key = &BASE64_STANDARD.decode(test["dk"].as_str().unwrap()).unwrap();
-    assert_eq!( decapsulation_key.len(), 96);
     let ciphertext = &BASE64_STANDARD.decode(test["c"].as_str().unwrap()).unwrap();
-    assert_eq! ( ciphertext.len(), 1120 ); // 
     let derived_shared_secret = &BASE64_STANDARD.decode(test["k"].as_str().unwrap()).unwrap();
+
+	assert_eq! ( encapsulation_key.len(), 1216 );
+    assert_eq!( decapsulation_key.len(), 96);
+    assert_eq! ( ciphertext.len(), 1120 ); // 
     assert_eq! ( derived_shared_secret.len(), 32 ); // 
-    //let (priv_key_pqc, pub_key_pqc) = MlKem768::generate_deterministic(&Array::try_from(&decapsulation_key[0..32]).unwrap(), &Array::try_from(&decapsulation_key[32..64]).unwrap());
-    // let mut pred_rng = PredictableRng::new(&decapsulation_key);
-    // let (priv_key_pqc,pub_key_pqc) = MlKem768::generate(&mut pred_rng);
     
-    // let x25519_priv: [u8; 32] = decapsulation_key[64..96].try_into().unwrap();
-    // let x25519_priv2 = x25519_dalek::StaticSecret::from(x25519_priv);
-    
-
-    // type TradDecapsulator = X25519Decapsulator<EcCombinerNoPubKeys<PassThroughKdf>>;
-    //type TradEncapKey = X25519EncapKey<U32>;
-    // let hybrd_priv = HybridPrivateKey::<MlKem768,_,_>{pq_private_key: priv_key_pqc, pq_public_key: pub_key_pqc, 
-    //     ec_public_key: x25519_dalek::PublicKey::from(&x25519_priv2),
-    //     trad_private_key: X25519Capsulator::<_,U32>::new_decapsulator(x25519_priv2.clone()), 
-    //     trad_public_key: X25519Capsulator::new_encapsulator()};
-    // //let decapsulator = HybridDecapsulator::<MlKem768,_,TradEncapKey,TradDecapsulator, KemCombiner<Okdf3::<sha3::Sha3_256, u0>, LabelMlKey768X25519Sha3_256>>::new(hybrd_priv);
-    
-    //let decapsulator = HybridKemMlKem768X25519Sha3_256::new_decapsulator(hybrd_priv);
-
-    //let encapped_key = HybridEncapKey::<MlKem768,TradEncapKey>::from_bytes(&GenericArray::from_slice(&ciphertext)).unwrap();
-    // let encapped_key = <HybridKemMlKem768X25519Sha3_256 as Capsulator>::EncappedKey::from_bytes(&GenericArray::from_slice(&ciphertext)).unwrap();
-    // let ss = decapsulator.try_decap(&encapped_key).unwrap();
-
-    //assert_eq!( ss.as_bytes(), derived_shared_secret);
-    let decapsulation_key2 = GenericArray::from_slice(&decapsulation_key);
-    //let decapsulator = <HybridKemMlKem768X25519Sha3_256 as Capsulator>::Decapsulator::from_bytes(decapsulation_key2);
-    let decapsulator = <HybridKemMlKem768X25519Sha3_256 as Capsulator>::from_bytes_decap(decapsulation_key2);
+	// Decapsulate
+	//let decapsulation_key2 = GenericArray::from_slice(&decapsulation_key);
+    let decapsulator = <HybridKemMlKem768X25519Sha3_256 as Capsulator>::try_from_slice_decap(&decapsulation_key).unwrap();
 
     let ct2 = GenericArray::from_slice(&ciphertext);
     let ss2 = decapsulator.decapsulate(ct2).unwrap();
     assert_eq! ( ss2.as_slice(), derived_shared_secret);
 
-    let encapsulation_key2 = GenericArray::from_slice(&encapsulation_key);
-    let encapsulator3 = <HybridKemMlKem768X25519Sha3_256 as Capsulator>::Encapsulator::from_bytes(encapsulation_key2);
+	// Encapsulate and decapsulate
+    //let encapsulation_key2 = GenericArray::from_slice(&encapsulation_key);
+    let encapsulator3 = HybridKemMlKem768X25519Sha3_256::try_from_slice_encap(&encapsulation_key).unwrap();
 
     let (ct3, ss3) = encapsulator3.encapsulate(&mut rand_core::OsRng).unwrap();
     let ss4 = decapsulator.decapsulate(&ct3).unwrap();
@@ -457,108 +208,32 @@ fn test_composition_ml_kem_6 (){
 }
 
 
-// #[derive(Clone, Debug, Eq, PartialEq, Sequence)]
-// #[cfg(feature="rustcrypto-ml-kem")]
-// struct EcPrivateKey2 {
-//     field1: der::Any,
-//     field2: AlgorithmIdentifierWithOid,
-//     field3: OctetString,
-// }
-// #[derive(Clone, Debug, Eq, PartialEq, Sequence)]
-// struct EcPrivateKey3 {
-//     field1: der::Any,
-//     private_key: OctetString,
-//     #[asn1(context_specific = "1", tag_mode = "EXPLICIT", optional="false")]
-//     field3: der::Any,
-// }
 
 #[test]
-#[cfg(all(feature="rustcrypto-ml-kem", feature="rustcrypto-p256", feature="rustcrypto-hmac", feature="rustcrypto-sha2"))]
 fn test_composition_ml_kem_7 (){
-    //use der::Decode;
-
-    
-
     let test_json : Value = serde_json::from_str(&JSON_TESTS.replace("\n","").replace(" ","")).unwrap();
     let test = &test_json["tests"][6];
 
-    println! ( "test[0]={:?}", test);
-
-    //assert_eq! ( test["tcId"], "id-MLKEM768-ECDH-P256-HMAC-SHA256") ;
     assert_eq! ( test["tcId"], "id-MLKEM768-ECDH-P256-SHA3-256") ;
     let encapsulation_key = &BASE64_STANDARD.decode(test["ek"].as_str().unwrap()).unwrap();
-    assert_eq! ( encapsulation_key.len(), 1249 );
     //let x5c_cert_with_public_key = &BASE64_STANDARD.decode(test["x5c"].as_str().unwrap()).unwrap();
     let decapsulation_key = &BASE64_STANDARD.decode(test["dk"].as_str().unwrap()).unwrap();
-    let decapsulation_key_pkcs8 = &BASE64_STANDARD.decode(test["dk_pkcs8"].as_str().unwrap()).unwrap();
-
-    println! ( "p256={:02X?}", &decapsulation_key_pkcs8[..]);
-    //assert_eq!( decapsulation_key.len(), 202);
-    //let (priv_key_pqc, pub_key_pqc) = MlKem768::generate_deterministic(&Array::try_from(&decapsulation_key[0..32]).unwrap(), &Array::try_from(&decapsulation_key[32..64]).unwrap());
-    // let mut pred_rng = PredictableRng::new(&decapsulation_key);
-    // let (priv_key_pqc,pub_key_pqc ) = MlKem768::generate(&mut pred_rng);
-    
-    //let p256_priv = &decapsulation_key[64..];
-    //let p256_priv2 = p256::SecretKey::from_bytes(p256_priv.into()).unwrap();
-    //let test_priv = p256::SecretKey::random(&mut OsRng);
-
-    //use rsa::pkcs1::der::Decode;
-    // let pkcs8_priv_key_1 = rsa::pkcs8::PrivateKeyInfo::from_der(&decapsulation_key_pkcs8[..]).unwrap();
-    // println! ( "pkcs8_priv_key_1={:02X?}", pkcs8_priv_key_1);
-    
-    //let ec_priv_key = sec1::EcPrivateKey::from_der(&decapsulation_key[64..]).unwrap();
-    let p256_priv2 = p256::SecretKey::from_sec1_der(&decapsulation_key[64..]).unwrap();
-
-    //println! ( "pkcs8={:02X?}", ec_priv_key.private_key);
-    //let any = EcPrivateKey2::from_der(p256_priv).unwrap();
-    //let any2 = EcPrivateKey3::from_der(any.field3.as_bytes()).unwrap();
-    
-    // println! ( "any={:02X?}", any);
-    // println! ( "any2={:02X?}", any2);
-    // println! ( "any2.field2=({}){:02X?}", any2.private_key.len(), any2.private_key);
-    // println! ( "any2.field3=({}){:02X?}", any2.field3.value().len(), any2.field3.value());
-    // println! ( "p256_priv={:02X?}", p256_priv);
-    // println! ( "p256_priv2={:02X?}", test_priv.to_sec1_der().unwrap());
-
-    //let p256_priv2 = p256::SecretKey::from_bytes(any2.private_key.as_bytes().into()).unwrap();
-    //let p256_priv2 = p256::SecretKey::from_sec1_der(ec_priv_key.private_key).unwrap();
-    //let p256_priv2 = p256::SecretKey::from_bytes(ec_priv_key.private_key.into()).unwrap();
-
+    let _decapsulation_key_pkcs8 = &BASE64_STANDARD.decode(test["dk_pkcs8"].as_str().unwrap()).unwrap();
     let ciphertext = &BASE64_STANDARD.decode(test["c"].as_str().unwrap()).unwrap();
-    assert_eq! ( ciphertext.len(), 1153 ); // 
     let derived_shared_secret = &BASE64_STANDARD.decode(test["k"].as_str().unwrap()).unwrap();
 
-    //type TradDecapsulator = X25519Decapsulator<KemKdfEcNoPubKeys<PassThroughKdf>>;
-    //type TradDecapsulator = EcdhDecapsulator<NistP256, EcCombinerNoPubKeys<PassThroughKdf>, U32, EcUncompressedEncoder<NistP256>>;
-    //type TradEncapKey = X25519EncapKey<U32>;
-    //type TradEncapKey = EcEncapKey<NistP256, U32, EcUncompressedEncoder<NistP256>>;
-    // let hybrd_priv = HybridPrivateKey::<MlKem768,_,_>{pq_private_key: priv_key_pqc, pq_public_key: pub_key_pqc, 
-    //     ec_public_key: p256_priv2.clone().public_key(), trad_private_key: EcdhKem::new_decapsulator(p256_priv2.clone()), trad_public_key: EcdhKem::new_encapsulator()};
-    // //let decapsulator = HybridDecapsulator::<MlKem768,_,TradEncapKey,TradDecapsulator, KemCombiner<HkdfExtract<Hmac<Sha256>>, LabelMlKey768EcdhP256HmacSha256>>::new(hybrd_priv);
-    // let decapsulator = HybridKemMlKem768P256HmacSha256::new_decapsulator(hybrd_priv);
-
-    // let encapped_key = HybridEncapKey::<MlKem768,TradEncapKey,_>::from_bytes(&GenericArray::from_slice(&ciphertext)).unwrap();
-    // let ss = decapsulator.try_decap(&encapped_key).unwrap();
-    // assert_eq!( ss.as_bytes(), derived_shared_secret);
-    //println! ( "oid={:02X?}", const_oid::ObjectIdentifier::new_unwrap("2.16.840.1.114027.80.5.2.78").to_der());
-
-
-    let mut decapsulation_key3 = decapsulation_key[0..64].to_vec();
-    decapsulation_key3.extend_from_slice(p256_priv2.to_bytes().as_slice());
-    dbg! ( &decapsulation_key3.len());
+	assert_eq! ( encapsulation_key.len(), 1249 );
+    assert_eq! ( ciphertext.len(), 1153 ); // 
     
-    let decapsulation_key2 = GenericArray::from_slice(&decapsulation_key3);
-    let decapsulator = <HybridKemMlKem768P256Sha3_256 as Capsulator>::Decapsulator::from_bytes(&decapsulation_key2);
+	let decapsulator = <HybridKemMlKem768P256Sha3_256 as Capsulator>::Decapsulator::from_slice(&decapsulation_key).unwrap();
         
     let ct2 = GenericArray::from_slice(&ciphertext);
-
-
 
     let ss2 = decapsulator.decapsulate(ct2).unwrap();
     assert_eq! ( ss2.as_slice(), derived_shared_secret);
 
-    let encapsulation_key2 = GenericArray::from_slice(&encapsulation_key);
-    let encapsulator3 = <HybridKemMlKem768P256Sha3_256 as Capsulator>::Encapsulator::from_bytes(encapsulation_key2);
+    //let encapsulation_key2 = GenericArray::from_slice(&encapsulation_key);
+    let encapsulator3 = HybridKemMlKem768P256Sha3_256::try_from_slice_encap(&encapsulation_key).unwrap();
 
     let (ct4, ss4) = encapsulator3.encapsulate(&mut OsRng).unwrap();
     let ss5 = decapsulator.decapsulate(&ct4).unwrap();
@@ -567,73 +242,41 @@ fn test_composition_ml_kem_7 (){
 
 
 #[test]
-#[cfg(all(feature="rustcrypto-ml-kem", feature="rustcrypto-p384", feature="rustcrypto-sha2", feature="rustcrypto-hmac"))]
-fn test_composition_ml_kem_8 (){
-       
+fn test_composition_ml_kem_8 (){   
     let test_json : Value = serde_json::from_str(&JSON_TESTS.replace("\n","").replace(" ","")).unwrap();
     let test = &test_json["tests"][7];
 
-    println! ( "test[0]={:?}", test);
-
     assert_eq! ( test["tcId"], "id-MLKEM768-ECDH-P384-SHA3-256") ;
     let encapsulation_key = &BASE64_STANDARD.decode(test["ek"].as_str().unwrap()).unwrap();
-    assert_eq! ( encapsulation_key.len(), 1281 );
     //let x5c_cert_with_public_key = &BASE64_STANDARD.decode(test["x5c"].as_str().unwrap()).unwrap();
-    let decapsulation_key = &BASE64_STANDARD.decode(test["dk"].as_str().unwrap()).unwrap();
-    assert_eq!( decapsulation_key.len(), 128);
-    //let (priv_key_pqc, pub_key_pqc) = MlKem768::generate_deterministic(&Array::try_from(&decapsulation_key[0..32]).unwrap(), &Array::try_from(&decapsulation_key[32..64]).unwrap());
-    //let mut pred_rng = PredictableRng::new(&decapsulation_key);
-    // let (priv_key_pqc,pub_key_pqc) = MlKem768::generate(&mut pred_rng);
-    
-    
-    //let pkcs8_priv_key = rsa::pkcs8::PrivateKeyInfo::from_der(&decapsulation_key[64..]).unwrap();
-    //let ec_priv_key = sec1::EcPrivateKey::from_der(&decapsulation_key[64..]).unwrap();
-    //let p256_priv2 = p384::SecretKey::from_bytes(ec_priv_key.private_key.into()).unwrap();
-    let p256_priv2 = p384::SecretKey::from_sec1_der(&decapsulation_key[64..]).unwrap();
-
+    let decapsulation_key = &BASE64_STANDARD.decode(test["dk"].as_str().unwrap()).unwrap();    
     let ciphertext = &BASE64_STANDARD.decode(test["c"].as_str().unwrap()).unwrap();
-    assert_eq! ( ciphertext.len(), 1185 ); // 
     let derived_shared_secret = &BASE64_STANDARD.decode(test["k"].as_str().unwrap()).unwrap();
 
-    // //type TradDecapsulator = EcdhDecapsulator<NistP384, EcCombinerNoPubKeys<PassThroughKdf>, U48, EcUncompressedEncoder<NistP384>>;
-    // type TradEncapKey = EcEncapKey<NistP384, U48, EcUncompressedEncoder<NistP384>>;
-    // let hybrd_priv = HybridPrivateKey::<MlKem768,_,_>{pq_private_key: priv_key_pqc, pq_public_key: pub_key_pqc, 
-    //     ec_public_key: p256_priv2.public_key(),
-    //     trad_private_key: EcdhKem::new_decapsulator(p256_priv2), trad_public_key: EcdhKem::new_encapsulator()};
-    // //let decapsulator = HybridDecapsulator::<MlKem768,_,TradEncapKey,TradDecapsulator, KemCombiner<HkdfExtract<Hmac<Sha256>>, LabelMlKey768EcdhP384HmacSha256>>::new(hybrd_priv);
-    // let decapsulator = HybridKemMlKem768P384HmacSha256::new_decapsulator(hybrd_priv);
-    // let encapped_key = HybridEncapKey::<MlKem768,TradEncapKey,_>::from_bytes(&GenericArray::from_slice(&ciphertext)).unwrap();
-    // let ss = decapsulator.try_decap(&encapped_key).unwrap();
-
-    // assert_eq!( ss.as_bytes(), derived_shared_secret);
-    let mut decapsulation_key3 = decapsulation_key[0..64].to_vec();
-    decapsulation_key3.extend_from_slice(p256_priv2.to_bytes().as_slice());
-    dbg! ( &decapsulation_key3.len());
+	assert_eq! ( encapsulation_key.len(), 1281 );
+	assert_eq!( decapsulation_key.len(), 128);
+	assert_eq! ( ciphertext.len(), 1185 ); // 
     
-    let decapsulation_key2 = GenericArray::from_slice(&decapsulation_key3);
-    //let decapsulator = <HybridKemMlKem768P384Sha3_256 as Capsulator>::Decapsulator::from_bytes(decapsulation_key2);
-    let decapsulator = HybridKemMlKem768P384Sha3_256::from_bytes_decap(decapsulation_key2);
-
+	// Decapsulate
+	let decapsulator = <HybridKemMlKem768P384Sha3_256 as Capsulator>::Decapsulator::from_slice(decapsulation_key).unwrap();
     let ct2 = GenericArray::from_slice(&ciphertext);
     let ss2 = decapsulator.decapsulate(ct2).unwrap();
     assert_eq! ( ss2.as_slice(), derived_shared_secret);
 
-    let encapsulation_key2 = GenericArray::from_slice(&encapsulation_key);
-    let encapsulator3 = <HybridKemMlKem768P384Sha3_256 as Capsulator>::Encapsulator::from_bytes(encapsulation_key2);
+	// Encapsulate and decapsulate
+    //let encapsulation_key2 = GenericArray::from_slice(&encapsulation_key);
+    let encapsulator3 = HybridKemMlKem768P384Sha3_256::try_from_slice_encap(&encapsulation_key).unwrap();
 
     let (ct3, ss3) = encapsulator3.encapsulate(&mut OsRng).unwrap();
     let ss4 = decapsulator.decapsulate(&ct3).unwrap();
 
-    assert_eq! ( ss3, ss4);   
-
-
+    assert_eq! ( ss3, ss4);
 }
 
 
 
 
 #[test]
-#[cfg(feature="rustcrypto-ml-kem")]
 fn test_composition_ml_kem_9 (){
     let test_json : Value = serde_json::from_str(&JSON_TESTS.replace("\n","").replace(" ","")).unwrap();
     let test = &test_json["tests"][8];
@@ -642,7 +285,24 @@ fn test_composition_ml_kem_9 (){
     let encapsulation_key = &BASE64_STANDARD.decode(test["ek"].as_str().unwrap()).unwrap();
     assert_eq! ( encapsulation_key.len(), 1249 );
     //let x5c_cert_with_public_key = &BASE64_STANDARD.decode(test["x5c"].as_str().unwrap()).unwrap();
-    let _decapsulation_key = &BASE64_STANDARD.decode(test["dk"].as_str().unwrap()).unwrap();
+    let decapsulation_key = &BASE64_STANDARD.decode(test["dk"].as_str().unwrap()).unwrap();
+
+    let ciphertext = &BASE64_STANDARD.decode(test["c"].as_str().unwrap()).unwrap();
+    let derived_shared_secret = &BASE64_STANDARD.decode(test["k"].as_str().unwrap()).unwrap();
+
+    // Decapsulate
+	let decapsulator = <HybridKemMlkem768BP256r1Sha3_256 as Capsulator>::Decapsulator::from_slice(decapsulation_key).unwrap();
+    let ct2 = GenericArray::from_slice(&ciphertext);
+    let ss2 = decapsulator.decapsulate(ct2).unwrap();
+    assert_eq! ( ss2.as_slice(), derived_shared_secret);
+
+    let encapsulator3 = HybridKemMlkem768BP256r1Sha3_256::try_from_slice_encap(&encapsulation_key).unwrap();
+
+    let (ct3, ss3) = encapsulator3.encapsulate(&mut OsRng).unwrap();
+    let ss4 = decapsulator.decapsulate(&ct3).unwrap();
+
+    assert_eq! ( ss3, ss4);
+
     // assert_eq!( decapsulation_key.len(), 249);
     // let (priv_key_pqc, pub_key_pqc) = MlKem768::generate_deterministic(&Array::try_from(&decapsulation_key[0..32]).unwrap(), &Array::try_from(&decapsulation_key[32..64]).unwrap());
     
@@ -686,41 +346,30 @@ fn test_composition_ml_kem_9 (){
 
 #[test]
 #[cfg(all(feature="rustcrypto-ml-kem", feature="rustcrypto-rsa", feature="rustcrypto-hmac", feature="rustcrypto-sha2"))]
-fn test_composition_ml_kem_10 (){
-    
+fn test_composition_ml_kem_10 (){    
     let test_json : Value = serde_json::from_str(&JSON_TESTS.replace("\n","").replace(" ","")).unwrap();
     let test = &test_json["tests"][9];
-
-    //println! ( "test[0]={:?}", test);
 
     assert_eq! ( test["tcId"], "id-MLKEM1024-RSA3072-SHA3-256") ;
     let encapsulation_key = &BASE64_STANDARD.decode(test["ek"].as_str().unwrap()).unwrap();
     let decapsulation_key = &BASE64_STANDARD.decode(test["dk"].as_str().unwrap()).unwrap();
     let ciphertext = &BASE64_STANDARD.decode(test["c"].as_str().unwrap()).unwrap();
     //let x5c_cert_with_public_key = &BASE64_STANDARD.decode(test["x5c"].as_str().unwrap()).unwrap();
+    let derived_shared_secret = &BASE64_STANDARD.decode(test["k"].as_str().unwrap()).unwrap();
     
     assert_eq! ( encapsulation_key.len(), 1966 );
     //assert_eq!( decapsulation_key.len(), 1830);
     assert_eq! ( ciphertext.len(), 1952 ); // 
 
-    let derived_shared_secret = &BASE64_STANDARD.decode(test["k"].as_str().unwrap()).unwrap();
-   
+	// Decapsulate
     let decapsulator = <HybridKemMlkem1024Rsa3072HmacSha512 as Capsulator>::Decapsulator::from_slice(decapsulation_key).unwrap();
 
     let ct = GenericArray::from_slice(&ciphertext);
     let ss = decapsulator.decapsulate(&ct).unwrap();
-
     assert_eq!( ss.as_slice(), derived_shared_secret);
 
-
-    let ct2 = GenericArray::from_slice(&ciphertext);
-    let ss2 = decapsulator.decapsulate(ct2).unwrap();
-    assert_eq! ( ss2.as_slice(), derived_shared_secret);
-
-    //let encapsulation_key2 = GenericArray::from_slice(&encapsulation_key);
-    //let encapsulator3 = <HybridKemMlkem1024Rsa3072HmacSha512 as Capsulator>::Encapsulator::from_bytes(encapsulation_key2);
-    let encapsulator3 = <HybridKemMlkem1024Rsa3072HmacSha512 as Capsulator>::Encapsulator::from_slice(encapsulation_key).unwrap();
-
+	// Encapsulate then decapsulate
+    let encapsulator3 = HybridKemMlkem1024Rsa3072HmacSha512::try_from_slice_encap(encapsulation_key).unwrap();
     let (ct4, ss4) = encapsulator3.encapsulate(&mut OsRng).unwrap();
     let ss5 = decapsulator.decapsulate(&ct4).unwrap();
     assert_eq! ( ss4, ss5);
@@ -728,66 +377,32 @@ fn test_composition_ml_kem_10 (){
 }
 
 #[test]
-#[cfg(all(feature="rustcrypto-ml-kem", feature="rustcrypto-p384", feature="rustcrypto-hmac"))]
-fn test_composition_ml_kem_11 (){
-    
-
-   
+fn test_composition_ml_kem_11 ()
+{    
     let test_json : Value = serde_json::from_str(&JSON_TESTS.replace("\n","").replace(" ","")).unwrap();
     let test = &test_json["tests"][10];
 
-    println! ( "test[0]={:?}", test);
-
     assert_eq! ( test["tcId"], "id-MLKEM1024-ECDH-P384-SHA3-256") ;
     let encapsulation_key = &BASE64_STANDARD.decode(test["ek"].as_str().unwrap()).unwrap();
-    assert_eq! ( encapsulation_key.len(), 1665 );
     //let x5c_cert_with_public_key = &BASE64_STANDARD.decode(test["x5c"].as_str().unwrap()).unwrap();
     let decapsulation_key = &BASE64_STANDARD.decode(test["dk"].as_str().unwrap()).unwrap();
-    //assert_eq!( decapsulation_key.len(), 249);
     let ciphertext = &BASE64_STANDARD.decode(test["c"].as_str().unwrap()).unwrap();
-    assert_eq! ( ciphertext.len(), 1665 ); // 
     let derived_shared_secret = &BASE64_STANDARD.decode(test["k"].as_str().unwrap()).unwrap();
-    //let (priv_key_pqc, pub_key_pqc) = MlKem1024::generate_deterministic(&Array::try_from(&decapsulation_key[0..32]).unwrap(), &Array::try_from(&decapsulation_key[32..64]).unwrap());
-    //let mut pred_rng = PredictableRng::new(&decapsulation_key);
-    //let (priv_key_pqc, pub_key_pqc ) = MlKem1024::generate(&mut pred_rng);
+
+	assert_eq! ( encapsulation_key.len(), 1665 );
+    //assert_eq!( decapsulation_key.len(), 249);
+    assert_eq! ( ciphertext.len(), 1665 ); // 
+
+	// Decapsulate
+	let decapsulator = <HybridKemMlKem1024P384Sha3_256 as Capsulator>::Decapsulator::from_slice(decapsulation_key).unwrap();
     
-
-    //let pkcs8_priv_key = rsa::pkcs8::PrivateKeyInfo::from_der(&decapsulation_key[64..]).unwrap();
-    //let pkcs8_priv_key = sec1::EcPrivateKey::from_der(&decapsulation_key[64..]).unwrap();
-    //let p256_priv2 = elliptic_curve::SecretKey::<NistP384>::from_bytes(pkcs8_priv_key.private_key.into()).unwrap();
-    let p384_priv = elliptic_curve::SecretKey::<NistP384>::from_sec1_der(&decapsulation_key[64..]).unwrap();
-    //let p256_pub = elliptic_curve::PublicKey::<BrainpoolP256r1>::from_sec1_bytes(pkcs8_priv_key.public_key);
-
-    
-
-    //type TradDecapsulator = EcdhDecapsulator<NistP384, EcCombinerNoPubKeys<PassThroughKdf>, U48, EcUncompressedEncoder<NistP384>>;
-    // type TradEncapKey = EcEncapKey<NistP384, U48, EcUncompressedEncoder<NistP384>>;
-    // let hybrd_priv = HybridPrivateKey::<MlKem1024,_,_>{pq_private_key: priv_key_pqc, pq_public_key: pub_key_pqc, 
-    //     ec_public_key: p256_priv2.public_key(),
-    // trad_private_key: EcdhKem::new_decapsulator(p256_priv2), trad_public_key: EcdhKem::new_encapsulator()};
-    // //let decapsulator = HybridDecapsulator::<MlKem1024,_,TradEncapKey,TradDecapsulator, KemCombiner<HkdfExtract<Hmac<Sha512>>, LabelMlKey1024EcdhP384HmacSha512>>::new(hybrd_priv);
-    // let decapsulator = HybridKemMlKem1024P384HmacSha512::new_decapsulator(hybrd_priv);
-
-    let mut decapsulation_key1 = decapsulation_key[0..64].to_vec();
-    decapsulation_key1.extend_from_slice(&p384_priv.to_bytes());
-
-    let decapsulation_key2 = GenericArray::from_slice(&decapsulation_key1);
-    let decapsulator = <HybridKemMlKem1024P384Sha3_256 as Capsulator>::Decapsulator::from_bytes(decapsulation_key2);
-    
-    
-    // let encapped_key = HybridEncapKey::<MlKem1024,TradEncapKey,_>::from_bytes(&GenericArray::from_slice(&ciphertext)).unwrap();
-    // let ss = decapsulator.try_decap(&encapped_key).unwrap();
     let ct = GenericArray::from_slice(&ciphertext);
     let ss = decapsulator.decapsulate(&ct).unwrap();
-
     assert_eq!( ss.as_slice(), derived_shared_secret);
 
-    let ct2 = GenericArray::from_slice(&ciphertext);
-    let ss2 = decapsulator.decapsulate(ct2).unwrap();
-    assert_eq! ( ss2.as_slice(), derived_shared_secret);
-
-    let encapsulation_key2 = GenericArray::from_slice(&encapsulation_key);
-    let encapsulator3 = <HybridKemMlKem1024P384Sha3_256 as Capsulator>::Encapsulator::from_bytes(encapsulation_key2);
+	// Encapsulate, then decapsulate
+    //let encapsulation_key2 = GenericArray::from_slice(&encapsulation_key);
+    let encapsulator3 = HybridKemMlKem1024P384Sha3_256::try_from_slice_encap(encapsulation_key).unwrap();
 
     let (ct3, ss3) = encapsulator3.encapsulate(&mut OsRng).unwrap();
     let ss4 = decapsulator.decapsulate(&ct3).unwrap();
@@ -795,38 +410,42 @@ fn test_composition_ml_kem_11 (){
 }
 
 #[test]
-#[cfg(feature="rustcrypto-ml-kem")]
-fn test_composition_ml_kem_12 (){
-   
+fn test_composition_ml_kem_12 ()
+{
     let test_json : Value = serde_json::from_str(&JSON_TESTS.replace("\n","").replace(" ","")).unwrap();
     let test = &test_json["tests"][11];
 
-    println! ( "test[0]={:?}", test);
-
     assert_eq! ( test["tcId"], "id-MLKEM1024-ECDH-brainpoolP384r1-SHA3-256") ;
-    // let encapsulation_key = &BASE64_STANDARD.decode(test["ek"].as_str().unwrap()).unwrap();
-    // assert_eq! ( encapsulation_key.len(), 1665 );
+    let encapsulation_key = &BASE64_STANDARD.decode(test["ek"].as_str().unwrap()).unwrap();
+    assert_eq! ( encapsulation_key.len(), 1665 );
     // //let x5c_cert_with_public_key = &BASE64_STANDARD.decode(test["x5c"].as_str().unwrap()).unwrap();
-    // let decapsulation_key = &BASE64_STANDARD.decode(test["dk"].as_str().unwrap()).unwrap();
-    // assert_eq!( decapsulation_key.len(), 249);
-    // let (priv_key_pqc, pub_key_pqc) = MlKem1024::generate_deterministic(&Array::try_from(&decapsulation_key[0..32]).unwrap(), &Array::try_from(&decapsulation_key[32..64]).unwrap());
+    let decapsulation_key = &BASE64_STANDARD.decode(test["dk"].as_str().unwrap()).unwrap();
+    //assert_eq!( decapsulation_key.len(), 249);
+    //let (priv_key_pqc, pub_key_pqc) = MlKem1024::generate_deterministic(&Array::try_from(&decapsulation_key[0..32]).unwrap(), &Array::try_from(&decapsulation_key[32..64]).unwrap());
     
-    // let pkcs8_priv_key = rsa::pkcs8::PrivateKeyInfo::from_der(&decapsulation_key[64..]).unwrap();
-    // //let p256_priv2 = bp256::BrainpoolP256r1::SecretKey::from_sec1_der(pkcs8_priv_key.private_key).unwrap();
+    //println! ( "der={:02X?}", &decapsulation_key[64..]);
+    //use rsa::pkcs1::der::Decode;
+    //let pkcs8_priv_key = rsa::pkcs8::PrivateKeyInfoRef::from_der(&decapsulation_key[64..]).unwrap();
+    //let any = der::Any::from_der(&decapsulation_key[64..]).unwrap();
+    //println! ( "any={:02X?}", any);
+    //let p384_priv2 = elliptic_curve::SecretKey::<bp384::BrainpoolP384r1>::from_der(&decapsulation_key[64..]).unwrap();
     // let p256_priv2 = elliptic_curve::SecretKey::<NistP384>::from_sec1_der(pkcs8_priv_key.private_key).unwrap();
-    // //let p256_pub = elliptic_curve::PublicKey::<BrainpoolP256r1>::from_sec1_bytes(pkcs8_priv_key.public_key);
+    //let p256_pub = elliptic_curve::PublicKey::<BrainpoolP256r1>::from_sec1_bytes(pkcs8_priv_key.public_key);
 
-    // let ciphertext = &BASE64_STANDARD.decode(test["c"].as_str().unwrap()).unwrap();
+    let ciphertext = &BASE64_STANDARD.decode(test["c"].as_str().unwrap()).unwrap();
     // assert_eq! ( ciphertext.len(), 1665 ); // 
-    // let derived_shared_secret = &BASE64_STANDARD.decode(test["k"].as_str().unwrap()).unwrap();
+    let derived_shared_secret = &BASE64_STANDARD.decode(test["k"].as_str().unwrap()).unwrap();
 
-    // type TradDecapsulator = EcdhDecapsulator<NistP384, KemKdfEcNoPubKeys<PassThroughKdf>, U48, false>;
+     let decapsulator = HybridKemMlkem1024BP384r1Sha3_256::try_from_slice_decap(decapsulation_key).unwrap();
+    //type TradDecapsulator = EcdhDecapsulator<bp384::BrainpoolP384r1, KemKdfEcNoPubKeys<PassThroughKdf>, U48, false>;
     // type TradEncapKey = EcEncapKey<NistP384, U48, EcUncompressedEncoder<NistP384>>;
     // let hybrd_priv = HybridPrivateKey::<MlKem1024,_,_>{pq_private_key: priv_key_pqc, pq_public_key: pub_key_pqc, ec_private_key: p256_priv2.clone(), ec_public_key: p256_priv2.public_key()};
     // let decapsulator = HybridDecapsulator::<MlKem1024,_,LabelMlKey768X25519Sha3_256,TradEncapKey,TradDecapsulator, EcUncompressedEncoder<NistP384>,KemCombiner<HkdfExtract<Hmac<Sha512>>, LabelMlKey1024EcdhP384HmacSha512>>::new(hybrd_priv);
 
-    // let encapped_key = HybridEncapKey::<MlKem1024,TradEncapKey>::from_bytes(&GenericArray::from_slice(&ciphertext)).unwrap();
-    // let ss = decapsulator.try_decap(&encapped_key).unwrap();
+    //let encapped_key = HybridEncapKey::<MlKem1024,TradEncapKey>::from_bytes(&GenericArray::from_slice(&ciphertext)).unwrap();
+     let ct = GenericArray::from_slice(&ciphertext);
+    let ss = decapsulator.decapsulate(&ct).unwrap();
+    assert_eq!( ss.as_slice(), derived_shared_secret);
 
     // assert_eq!( ss.as_bytes(), derived_shared_secret);
 }
@@ -838,27 +457,37 @@ fn test_composition_ml_kem_13(){
 
     assert_eq! ( test["tcId"], "id-MLKEM1024-X448-SHA3-256") ;
     let encapsulation_key = &BASE64_STANDARD.decode(test["ek"].as_str().unwrap()).unwrap();
-    assert_eq! ( encapsulation_key.len(), 1624 );
     //let x5c_cert_with_public_key = &BASE64_STANDARD.decode(test["x5c"].as_str().unwrap()).unwrap();
     let decapsulation_key = &BASE64_STANDARD.decode(test["dk"].as_str().unwrap()).unwrap();
-    assert_eq!( decapsulation_key.len(), 120);
     let ciphertext = &BASE64_STANDARD.decode(test["c"].as_str().unwrap()).unwrap();
-    assert_eq! ( ciphertext.len(), 1624 ); // 
     let derived_shared_secret = &BASE64_STANDARD.decode(test["k"].as_str().unwrap()).unwrap();
+    
+	assert_eq! ( encapsulation_key.len(), 1624 );
+    assert_eq!( decapsulation_key.len(), 120);
+    assert_eq! ( ciphertext.len(), 1624 ); // 
     assert_eq! ( derived_shared_secret.len(), 32);
 
-    let (encap, decap) = HybridKemMlKem1024X448Sha3_256::derive_from_seed(&Array::try_from(decapsulation_key.as_slice()).unwrap());
+    let (encap, decap) = HybridKemMlKem1024X448Sha3_256::generate_deterministic(&Array::try_from(decapsulation_key.as_slice()).unwrap()).unwrap();
 
-    let decap2 = HybridKemMlKem1024X448Sha3_256::from_bytes_decap(&GenericArray::from_slice(decapsulation_key.as_slice()));
-    let encap2 = HybridKemMlKem1024X448Sha3_256::from_bytes_encap(&GenericArray::from_slice(encapsulation_key.as_slice()));
-
-    assert_eq! ( encap.as_bytes(), encap2.as_bytes());
-    assert_eq! ( decap.as_bytes(), decap2.as_bytes());
-
-    //let ss2 = decap.decapsulate(&GenericArray::from_slice(&ciphertext)).unwrap();
     let ss2 = decap.decapsulate(ciphertext.as_slice().try_into().unwrap()).unwrap();
     assert_eq! ( ss2.as_slice(), derived_shared_secret.as_slice());
 
+
+    let decap2 = HybridKemMlKem1024X448Sha3_256::try_from_slice_decap(decapsulation_key).unwrap();
+
+    let ss4 = decap2.decapsulate(ciphertext.as_slice().try_into().unwrap()).unwrap();
+    assert_eq! ( ss4.as_slice(), derived_shared_secret.as_slice());
+
+    let encap2 = HybridKemMlKem1024X448Sha3_256::try_from_slice_encap(encapsulation_key).unwrap();
+
+    assert_eq! ( encap.get_recipient_public_key_bytes(), encap2.get_recipient_public_key_bytes());
+    
+    //assert_eq! ( decap.to_bytes(), decap2.to_bytes());
+
+	// Decapsulate
+    
+
+	// Encapsulate then decapsulate
     let (ct3, ss3) = encap.encapsulate ( &mut rand_core::OsRng).unwrap();
     let ss4 = decap.decapsulate(&ct3).unwrap();
 
@@ -867,52 +496,36 @@ fn test_composition_ml_kem_13(){
 }
 
 #[test]
-#[cfg(all(feature="rustcrypto-ml-kem", feature="rustcrypto-p521", feature="rustcrypto-hmac", feature="rustcrypto-sha2"))]
-fn test_composition_ml_kem_14 (){
-    
+fn test_composition_ml_kem_14 ()
+{    
     let test_json : Value = serde_json::from_str(&JSON_TESTS.replace("\n","").replace(" ","")).unwrap();
     let test = &test_json["tests"][13];
 
-    println! ( "test[0]={:?}", test);
-
     assert_eq! ( test["tcId"], "id-MLKEM1024-ECDH-P521-SHA3-256") ;
     let encapsulation_key = &BASE64_STANDARD.decode(test["ek"].as_str().unwrap()).unwrap();
-    assert_eq! ( encapsulation_key.len(), 1701 );
     let decapsulation_key = &BASE64_STANDARD.decode(test["dk"].as_str().unwrap()).unwrap();
-    //assert_eq!( decapsulation_key.len(), 305);
-
     let ciphertext = &BASE64_STANDARD.decode(test["c"].as_str().unwrap()).unwrap();
-    assert_eq! ( ciphertext.len(), 1701 ); // 
     let derived_shared_secret = &BASE64_STANDARD.decode(test["k"].as_str().unwrap()).unwrap();
+    
+	assert_eq! ( encapsulation_key.len(), 1701 );
+    assert_eq! ( ciphertext.len(), 1701 ); // 
+    assert_eq!( decapsulation_key.len(), 146);
     assert_eq! ( derived_shared_secret.len(), 32 );
 
-    //let pkcs8_priv_key = rsa::pkcs8::PrivateKeyInfo::from_der(&decapsulation_key[64..]).unwrap();
-    // let ec_priv_key = sec1::EcPrivateKey::from_der(&decapsulation_key[64..]).unwrap();
-    // let p256_priv2 = elliptic_curve::SecretKey::<NistP521>::from_bytes(ec_priv_key.private_key.into()).unwrap();
-    let p256_priv2 = elliptic_curve::SecretKey::<NistP521>::from_sec1_der(&decapsulation_key[64..]).unwrap();
-    
-    let encapsulation_key2 = GenericArray::from_slice(&encapsulation_key);
-    let encapsulator3 = <HybridKemMlKem1024P521Sha3_256 as Capsulator>::Encapsulator::from_bytes(encapsulation_key2);
-
-    let mut decapsulation_key2 = decapsulation_key[..64].to_vec();
-    decapsulation_key2.extend_from_slice(&p256_priv2.to_bytes());
-
-    let decapsulation_key3 = GenericArray::from_slice(&decapsulation_key2);
-
-    let decap = <HybridKemMlKem1024P521Sha3_256 as Capsulator>::Decapsulator::from_bytes(&decapsulation_key3);
+	// Decapsulate
+	//let decap = <HybridKemMlKem1024P521Sha3_256 as Capsulator>::Decapsulator::from_slice(decapsulation_key).unwrap();
+    let decap = HybridKemMlKem1024P521Sha3_256::try_from_slice_decap(decapsulation_key).unwrap();
     let ct2 = GenericArray::from_slice(&ciphertext);
     let ss4 = decap.decapsulate(&ct2).unwrap();
-
     assert_eq! ( ss4.as_slice(), derived_shared_secret.as_slice());
+
+	// Encapsulate, then decapsulate
+	//let encapsulation_key2 = GenericArray::from_slice(&encapsulation_key);
+    let encapsulator3 = HybridKemMlKem1024P521Sha3_256::try_from_slice_encap(&encapsulation_key).unwrap();
 
     let (ct5, ss5) = encapsulator3.encapsulate(&mut OsRng).unwrap();
     let ss6 = decap.decapsulate(&ct5).unwrap();
-
     assert_eq! ( ss5, ss6 );
-
-    //assert_eq! ( encap.as_bytes().as_slice(), encapsulation_key );
-
-
 }
 
 const _JSON_TESTS_OLD: &str = r#"{

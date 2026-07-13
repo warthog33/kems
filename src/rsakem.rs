@@ -26,16 +26,24 @@
 //! assert! ( k_send == k_recv);
 //!
 
+use std::borrow::Cow;
+use std::convert::Infallible;
 use std::marker::PhantomData;
 use std::fmt::Debug;
 use std::ops::Add;
 
 use crate::kem_with_kdf::{CombinerNoKeys, KemWithKdf};
-use crate::{Capsulator, CryptoRngCore, Decapsulate, Encapsulate, EncapsulateDeterministic2, EncodedSizeUser2, FromKey, GetEncapsulator, GetRecipientPublicKeyBytes};
+use crate::{Capsulator, CryptoRngCore, Decapsulate, Encapsulate, EncapsulateDeterministic2, FromKey, GetEncapsulator, GetRecipientPublicKeyBytes};
+use cipher::KeySizeUser;
+use cipher::common::KeyExport;
 use cipher::consts::{U14};
 use cipher::typenum::{Sum};
+use const_oid::{AssociatedOid, ObjectIdentifier};
+use const_oid::db::rfc5912::{ID_RSAES_OAEP, RSA_ENCRYPTION};
+use digest::{FixedOutput, HashMarker};
 use generic_array::{GenericArray, ArrayLength};
 use kdfs::hybrid_array::{Array, ArraySize};
+use ml_kem::TryKeyInit;
 use rsa::rand_core::TryRng;
 use rsa::{traits::{PaddingScheme, PublicKeyParts}, Oaep, Pkcs1v15Encrypt, RsaPrivateKey, RsaPublicKey};
 use rsa::pkcs1::{DecodeRsaPrivateKey, DecodeRsaPublicKey, EncodeRsaPublicKey};
@@ -99,7 +107,7 @@ where LI: Debug + ArraySize + ArrayLength,
     type CiphertextSize = LE;
     type SharedKeySize = LI;
     
-    fn generate ( rng: &mut impl CryptoRngCore ) -> (Self::Encapsulator, Self::Decapsulator) {
+    fn generate_from_rng ( rng: &mut impl CryptoRngCore ) -> (Self::Encapsulator, Self::Decapsulator) {
         let private = rsa::RsaPrivateKey::new(&mut wrapper::RngWrapper::from(rng), LE::USIZE*8).unwrap();
         let public = private.to_public_key();
         (RsaEncapsulator::from_key(public), RsaDecapsulator::from_key(private))
@@ -110,12 +118,29 @@ where LI: Debug + ArraySize + ArrayLength,
 pub type RsaOrigKem<LE,LK,K> = KemWithKdf<RsaKem<LE,LE,RsaRaw>, CombinerNoKeys, K, LK>;
 // Implemenation of a KEM which generates a random symmetric key and encrypts it using RSA with OAEP 
 pub type RsaOaepKem<LE,LK,D,F> = RsaKem<LE, LK, Oaep2<D,F>>;
-// Implemenation of a KEM which generates a random symmetric key and encrypts it using RSA with OAEP with a specified encoded length
-pub type RsaOaepKem2<LE,LK,D,F> = RsaKem<LE, LK, Oaep2<D,F>>;
+// // Implemenation of a KEM which generates a random symmetric key and encrypts it using RSA with OAEP with a specified encoded length
+// pub type RsaOaepKem2<LE,LK,D,F> = RsaKem<LE, LK, Oaep2<D,F>>;
 // Implemenation of a KEM which generates a random symmetric key and encrypts it using RSA with PKCS#1 v1.5 
 pub type RsaPkcs15Kem<LE,LK> = RsaKem<LE, LK, Pkcs1v15Encrypt>;
 
+// Defined by ISO 18033-2
+pub const ID_KEM_RSA: ObjectIdentifier = ObjectIdentifier::new_unwrap("1.0.18033.2.2.4");
 
+impl<LE,LK,K> AssociatedOid for RsaOrigKem<LE,LK,K>
+{
+    const OID: ObjectIdentifier = ID_KEM_RSA;
+}
+
+impl<LE,LK> AssociatedOid for RsaPkcs15Kem<LE,LK> 
+{
+    const OID: ObjectIdentifier = RSA_ENCRYPTION;
+}
+impl<LE,LK,D,F> AssociatedOid for RsaOaepKem<LE,LK,D,F>
+where D: FixedOutput + Default + HashMarker,
+    F: FixedOutput + Default + Digest
+{
+    const OID: ObjectIdentifier = ID_RSAES_OAEP;
+}
 
 ///
 /// Implementation of RSA KEM as defined by 18033-3
@@ -243,23 +268,47 @@ impl<LE: ArrayLength, LI: ArrayLength, P> FromKey for RsaEncapsulator<LE, LI, P>
     }
 }
 
-impl<LE, LI, P> EncodedSizeUser2 for RsaEncapsulator<LE, LI, P>
+impl<LE, LI, P> KeySizeUser for RsaEncapsulator<LE, LI, P>
 where LE: ArrayLength + ArraySize + Debug + PartialEq + Add<U14>,
-    Sum<LE, U14>: ArrayLength,
+    Sum<LE, U14>: ArraySize,
     LI: ArrayLength + ArraySize + PartialEq + Debug
 {
-    // PKCS#1 encoding add 14 bytes to the modulus size (at least with a 2 byte public exponent)
-    type EncodedSize = Sum<LE, U14>;
+    type KeySize = Sum<LE, U14>;
+}
 
-    fn as_bytes(&self) -> crate::Encoded<Self> {
+impl<LE, LI, P> KeyExport for RsaEncapsulator<LE, LI, P>
+where LE: ArrayLength + ArraySize + Debug + PartialEq + Add<U14>,
+    Sum<LE, U14>: ArraySize,
+    LI: ArrayLength + ArraySize + PartialEq + Debug
+{
+    fn to_bytes(&self) -> cipher::Key<Self> {
         let sender_public_der = self.sender_public.to_pkcs1_der().unwrap();
-        GenericArray::from_slice(sender_public_der.as_bytes()).clone()
-    }
-    fn from_bytes(enc: &crate::Encoded<Self>) -> Self {
-        let sender_public = rsa::RsaPublicKey::from_pkcs1_der(&enc).unwrap();
-        Self { sender_public, phantom2: PhantomData, phantom1: PhantomData, /*phantom4: PhantomData,*/ phantom3: PhantomData}
+        Array::try_from(sender_public_der.as_bytes()).unwrap()
+        //Array::from(*self.recipient_public.as_bytes())
     }
 }
+
+
+
+
+
+// impl<LE, LI, P> EncodedSizeUser2 for RsaEncapsulator<LE, LI, P>
+// where LE: ArrayLength + ArraySize + Debug + PartialEq + Add<U14>,
+//     Sum<LE, U14>: ArrayLength,
+//     LI: ArrayLength + ArraySize + PartialEq + Debug
+// {
+//     // PKCS#1 encoding add 14 bytes to the modulus size (at least with a 2 byte public exponent)
+//     type EncodedSize = Sum<LE, U14>;
+
+//     fn as_bytes(&self) -> crate::Encoded<Self> {
+//         let sender_public_der = self.sender_public.to_pkcs1_der().unwrap();
+//         GenericArray::from_slice(sender_public_der.as_bytes()).clone()
+//     }
+//     fn from_bytes(enc: &crate::Encoded<Self>) -> Self {
+//         let sender_public = rsa::RsaPublicKey::from_pkcs1_der(&enc).unwrap();
+//         Self { sender_public, phantom2: PhantomData, phantom1: PhantomData, /*phantom4: PhantomData,*/ phantom3: PhantomData}
+//     }
+// }
 
 impl<LE, LI, /*LK: ArrayLength<u8>,*/P> TryFrom<&[u8]> for RsaEncapsulator<LE, LI, /*LK,*/ P>
 where LE: ArrayLength + ArraySize + Debug + PartialEq,
@@ -286,7 +335,8 @@ where LI:ArrayLength + Debug + ArraySize,
             
         // Use a loop because the RSA-KEM padding technique may fail. Simply retry with a new random number
         for _i in 1..10 {
-            if wrapper::RngWrapper::try_fill_bytes(&mut rng2, &mut raw_shared_key).is_err() {
+            //if wrapper::RngWrapper::try_fill_bytes(&mut rng2, &mut raw_shared_key).is_err() {
+            if rng2.try_fill_bytes(&mut raw_shared_key).is_err() {
                 continue;
             }
             let Ok(encapsulated_key_as_vec) = self.sender_public.encrypt(&mut rng2, P::default(), &raw_shared_key) else {
@@ -340,8 +390,8 @@ where LI: ArrayLength,
 {
     type EncodedLen = LI;
 
-    fn get_recipient_public_key_bytes(&self) -> GenericArray<u8, Self::EncodedLen> {
-        todo!()
+    fn get_recipient_public_key_bytes<'a>(&'a self) -> Cow<'a, [u8]> {
+        self.sender_public.to_pkcs1_der().unwrap().into_vec().into()
     }
 }
 
@@ -406,7 +456,7 @@ where LI: ArrayLength,
     LK: ArrayLength
 {
     type Encapsulator = RsaEncapsulator<LI, LI, P>;
-    fn get_encapsulator(&self) -> Self::Encapsulator {
+    fn encapsulation_key(&self) -> Self::Encapsulator {
         Self::Encapsulator{sender_public: self.recipient_private.to_public_key(), phantom2: PhantomData, phantom1: PhantomData, phantom3: PhantomData}
     }
 }
@@ -417,7 +467,209 @@ where LI: ArrayLength,
 {
     type EncodedLen = LI;
 
-    fn get_recipient_public_key_bytes(&self) -> GenericArray<u8, Self::EncodedLen> {
+    fn get_recipient_public_key_bytes<'a>(&'a self) -> Cow<'a, [u8]> {
+        self.recipient_private.to_public_key().to_pkcs1_der().unwrap().to_vec().into()
+    }
+}
+
+
+
+
+//////////////////////////////
+///  Repeat using rustcryto trait
+/// 
+/// 
+impl<LE, LI, P: PaddingScheme+Default> ml_kem::kem::Kem for RsaKem<LE, LI, P>
+where LI: Debug + ArraySize + ArrayLength + Send + Sync + PartialEq,
+    LE: ArraySize + PartialEq + ArrayLength + Debug + Sync + Send + Add<U14>,
+    P: Sync + Send + 'static,
+    Sum<LE, U14>: ArraySize,
+
+    // where LE: ArrayLength + ArraySize + Debug + PartialEq + Add<U14>,
+    // Sum<LE, U14>: ArraySize,
+    // LI: ArrayLength + ArraySize + PartialEq + Debug
+    
+{
+    type DecapsulationKey = RsaDecapsulator<LE, LI, P>;
+    type EncapsulationKey= RsaEncapsulator<LE, LI, P>;
+    type CiphertextSize = LE;
+    type SharedKeySize = LI;
+    
+    // fn generate_from_rng ( rng: &mut impl CryptoRngCore ) -> (Self::Encapsulator, Self::Decapsulator) {
+    //     let private = rsa::RsaPrivateKey::new(&mut wrapper::RngWrapper::from(rng), LE::USIZE*8).unwrap();
+    //     let public = private.to_public_key();
+    //     (RsaEncapsulator::from_key(public), RsaDecapsulator::from_key(private))
+    // }
+}
+
+
+impl<LE, LI, P> Default for RsaKem<LE, LI, P>
+{
+    fn default() -> Self {
+        Self(Default::default(), Default::default(), Default::default(), Default::default())
+    }
+}
+impl<LE, LI, P> Clone for RsaKem<LE, LI, P>
+{
+    fn clone(&self) -> Self {
+        Self(self.0.clone(), self.1.clone(), self.2.clone(), self.3.clone())
+    }
+}
+impl<LE, LI, P> Copy for RsaKem<LE, LI, P>
+{
+
+}
+impl<LE, LI, P> Eq for RsaKem<LE, LI, P>
+{
+
+}
+impl<LE, LI, P> Debug for RsaKem<LE, LI, P>
+{
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("RsaKem").field(&self.0).field(&self.1).field(&self.2).field(&self.3).finish()
+    }
+}
+impl<LE, LI, P> PartialEq for RsaKem<LE, LI, P>
+{
+    fn eq(&self, other: &Self) -> bool {
+        self.0 == other.0 && self.1 == other.1 && self.2 == other.2 && self.3 == other.3
+    }
+}
+impl<LE, LI, P> Ord for RsaKem<LE, LI, P>
+{
+    fn cmp(&self, _other: &Self) -> std::cmp::Ordering {
+        todo!()
+    }
+}
+impl<LE, LI, P> PartialOrd for RsaKem<LE, LI, P>
+{
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        match self.0.partial_cmp(&other.0) {
+            Some(core::cmp::Ordering::Equal) => {}
+            ord => return ord,
+        }
+        match self.1.partial_cmp(&other.1) {
+            Some(core::cmp::Ordering::Equal) => {}
+            ord => return ord,
+        }
+        match self.2.partial_cmp(&other.2) {
+            Some(core::cmp::Ordering::Equal) => {}
+            ord => return ord,
+        }
+        self.3.partial_cmp(&other.3)
+    }
+}
+
+
+
+
+
+impl<LI, LK, P> ml_kem::Generate for RsaDecapsulator<LI, LK, P>
+where P: PaddingScheme + Default
+{
+    fn try_generate_from_rng<R: rand::TryCryptoRng + ?Sized>(_rng: &mut R) -> Result<Self, R::Error> {
+        todo!()
+    }
+}
+
+impl<LI, LK, P> ml_kem::kem::Decapsulator for RsaDecapsulator<LI, LK, P>
+where P: PaddingScheme + Default + Sync + Send + 'static,
+    LI: ArraySize + ArrayLength + Send + Sync+ PartialEq + Add<U14>,
+    LK: ArraySize + ArrayLength + Send + Sync + PartialEq, 
+    Sum<LI, U14>: ArraySize,
+{
+    type Kem = RsaKem::<LI, LK,P>;
+
+    fn encapsulation_key(&self) -> &ml_kem::kem::EncapsulationKey<Self::Kem> {
+        todo!()
+    }
+}
+
+impl<LI, LK, P> ml_kem::kem::TryDecapsulate for RsaDecapsulator<LI, LK, P>
+where P: PaddingScheme + Default + Sync + Send + 'static,
+    LI: ArraySize + ArrayLength + Send + Sync+ PartialEq + Add<U14>,
+    LK: ArraySize + ArrayLength + Send + Sync + PartialEq, 
+    Sum<LI, U14>: ArraySize,
+{
+    type Error = Infallible;
+
+    fn try_decapsulate(
+        &self,
+        _ct: &ml_kem::Ciphertext<Self::Kem>,
+    ) -> Result<ml_kem::kem::SharedKey<Self::Kem>, Self::Error> {
+        todo!()
+    }
+}
+
+
+
+impl<LI, LK, P> Eq for RsaEncapsulator<LI, LK, P>
+where P: PaddingScheme + Default,
+    LI: ArrayLength,
+    LK: ArrayLength,
+{
+    
+}
+impl<LI, LK, P> PartialEq for RsaEncapsulator<LI, LK, P>
+where P: PaddingScheme + Default,
+    LI: ArrayLength,
+    LK: ArrayLength,
+{
+    fn eq(&self, other: &Self) -> bool {
+        self.sender_public == other.sender_public && self.phantom1 == other.phantom1 && self.phantom2 == other.phantom2 && self.phantom3 == other.phantom3
+    }
+}
+impl<LI, LK, P> Debug for RsaEncapsulator<LI, LK, P>
+where P: PaddingScheme + Default,
+    LI: ArrayLength,
+    LK: ArrayLength,
+{
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RsaEncapsulator").field("sender_public", &self.sender_public).field("phantom1", &self.phantom1).field("phantom2", &self.phantom2).field("phantom3", &self.phantom3).finish()
+    }
+}
+impl<LI, LK, P> Clone for RsaEncapsulator<LI, LK, P>
+where P: PaddingScheme + Default,
+    LI: ArrayLength,
+    LK: ArrayLength,
+{
+    fn clone(&self) -> Self {
+        Self { sender_public: self.sender_public.clone(), phantom1: self.phantom1.clone(), phantom2: self.phantom2.clone(), phantom3: self.phantom3.clone() }
+    }
+}
+
+impl<LI, LK, P> TryKeyInit for RsaEncapsulator<LI, LK, P>
+where LI: ArrayLength + ArraySize + Debug + PartialEq + Add<U14>,
+    Sum<LI, U14>: ArraySize,
+    LK: ArrayLength + ArraySize + PartialEq + Debug
+{
+    fn new(_key: &cipher::Key<Self>) -> Result<Self, ml_kem::InvalidKey> {
+        todo!()
+    }
+}
+impl<LI, LK, P> ml_kem::KeyInit for RsaEncapsulator<LI, LK, P>
+where LI: ArrayLength + ArraySize + Debug + PartialEq + Add<U14>,
+    Sum<LI, U14>: ArraySize,
+    LK: ArrayLength + ArraySize + PartialEq + Debug
+{
+    fn new(_key: &cipher::Key<Self>) -> Self {
+        todo!()
+    }
+}
+
+
+
+impl<LI, LK, P> ml_kem::Encapsulate for RsaEncapsulator<LI, LK, P>
+where P: PaddingScheme + Default + 'static + Sync + Send,
+    LI: ArrayLength + ArraySize + Debug + PartialEq + Add<U14> + Sync + Send,
+    Sum<LI, U14>: ArraySize,
+    LK: ArrayLength + ArraySize + PartialEq + Debug + Send + Sync,
+{
+    type Kem = RsaKem::<LI, LK,P>;
+
+    fn encapsulate_with_rng<R>(&self, _rng: &mut R) -> (ml_kem::Ciphertext<Self::Kem>, ml_kem::kem::SharedKey<Self::Kem>)
+    where
+        R: rand::CryptoRng + ?Sized {
         todo!()
     }
 }

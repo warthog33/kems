@@ -4,14 +4,12 @@ use kdfs::hybrid_array::Array;
 use kems::{Capsulator,Encapsulate, Decapsulate};
 use kems::generic_array::{GenericArray, typenum::{U32}};
 use kems::eckem::SeedAsScalar;
-use kems::kem_with_kdf::{KemWithKdf, CombinerAllPubKeys};
-use kems::x25519kem::X25519Capsulator;
-use kems::x448kem::X448Capsulator;
+use kems::kem_with_kdf::{KemWithKdf, CombinerAllPubKeys, KemAuthWithKdf};
+use kems::x25519kem::{X25519Capsulator,X25519AuthCapsulator};
+use kems::x448kem::{X448AuthCapsulator,X448Capsulator};
 use rand_core::OsRng;
 use sha2::Sha256;
 use x25519_dalek::{StaticSecret, PublicKey};
-use kems::{kem_with_kdf::KemAuthWithKdf, x25519kem::X25519AuthCapsulator};
-use kems::x448kem::X448AuthCapsulator;
 
 
 #[test]
@@ -28,6 +26,44 @@ fn simple_x25519_kem ()
     let k_recv: Array<u8, U16> = decapsulator.decapsulate(&c0_send).unwrap();
 
     assert_eq! ( k_send.as_slice(), k_recv.as_slice());
+}
+#[test]
+fn simple_x25519_kem2 () 
+{
+    let recipient_secret_key = StaticSecret::random_from_rng(&mut OsRng);
+    let recipient_public_key = PublicKey::from(&recipient_secret_key);
+
+    let encapsulator = X25519Capsulator::<SeedAsScalar>::from_public_key(recipient_public_key);
+    
+    let (c0_send, k_send) = ml_kem::Encapsulate::encapsulate(&encapsulator);
+            
+    let decapsulator = X25519Capsulator::<SeedAsScalar>::from_private_key(recipient_secret_key);
+
+    //let k_recv = ml_kem::Decapsulate::decapsulate(&decapsulator, &c0_send);
+    let k_recv = ml_kem::kem::TryDecapsulate::try_decapsulate(&decapsulator, &c0_send).unwrap();
+
+    assert_eq! ( k_send.as_slice(), k_recv.as_slice());
+}
+#[test]
+fn simple_x25519_kem3 () 
+{
+    let recipient_secret_key = StaticSecret::random_from_rng(&mut OsRng);
+    let recipient_public_key = PublicKey::from(&recipient_secret_key);
+
+    let encapsulator = KemWithKdf::<X25519Capsulator::<SeedAsScalar>, CombinerAllPubKeys, Kdf1::<Sha256>,U16>::from_public_key(recipient_public_key);
+    
+    // Use traits from rustcrypto kem 0.3.0
+    let (c0_send, k_send) = ml_kem::Encapsulate::encapsulate(&encapsulator);
+            
+    let decapsulator = KemWithKdf::<X25519Capsulator::<SeedAsScalar>, CombinerAllPubKeys, Kdf1::<Sha256>,U16>::from_private_key(recipient_secret_key);
+
+    //let k_recv = ml_kem::Decapsulate::decapsulate(&decapsulator, &c0_send);
+    let k_recv = crate::Decapsulate::decapsulate(&decapsulator, &c0_send.0.into()).unwrap();
+    assert_eq! ( k_send.as_slice(), k_recv.as_slice());
+
+    let k_recv2 = ml_kem::kem::TryDecapsulate::try_decapsulate(&decapsulator, &c0_send).unwrap();
+    assert_eq! ( k_send.as_slice(), k_recv2.as_slice());
+    
 }
 
 
@@ -54,7 +90,7 @@ fn auth_x25519_kem () {
 fn x25519_test_new_kem_traits () {
     
     //let (encapsulator, decapsulator) = X25519Capsulator::<EcCombinerAllPubKeys::<Kdf1::<Sha256>>,U16, SeedAsScalar>::generate(&mut OsRng);
-    let (encapsulator, decapsulator) = KemWithKdf::<X25519Capsulator::<SeedAsScalar>, CombinerAllPubKeys, Kdf1::<Sha256>, U16>::generate(&mut OsRng);
+    let (encapsulator, decapsulator) = KemWithKdf::<X25519Capsulator::<SeedAsScalar>, CombinerAllPubKeys, Kdf1::<Sha256>, U16>::generate_from_rng(&mut OsRng);
     let (ek, ss1): (GenericArray<_,_>, _) = encapsulator.encapsulate(&mut OsRng).unwrap();    
     let ss2 = decapsulator.decapsulate(&ek).unwrap();
     assert_eq!(ss1, ss2);
@@ -63,7 +99,7 @@ fn x25519_test_new_kem_traits () {
 
 #[test]
 fn x448_test_new_kem_traits () {
-    let (encapsulator, decapsulator) = KemWithKdf::<X448Capsulator::<SeedAsScalar>, CombinerAllPubKeys, Kdf1::<Sha256>, U16>::generate(&mut OsRng);
+    let (encapsulator, decapsulator) = KemWithKdf::<X448Capsulator::<SeedAsScalar>, CombinerAllPubKeys, Kdf1::<Sha256>, U16>::generate_from_rng(&mut OsRng);
     let (ek, ss1) = encapsulator.encapsulate(&mut OsRng).unwrap();    
     let ss2 = decapsulator.decapsulate(&ek).unwrap();
 

@@ -2,34 +2,54 @@
 //! Wrapper around the ML-KEM crate to provide the same traits as supported by other kems in this crate.
 //! It also allows for an explicit KDF which is applied immediately after ML-KEM outputs a shared key
 //! 
+#[cfg(all(feature="rustcrypto-ml-kem", feature="rustcrypto-sha3"))]
 use crate::kem_with_kdf::{CombinerNoKeys, KemWithKdf};
-use crate::{Array, ArraySize, ArrayLength, Capsulator, CryptoRngCore, Decapsulate, DecodeGenericArray, Encapsulate, EncapsulateDeterministic2, EncodeGenericArray, EncodedSizeUser2, GenerateCapsulatorFromSeed, GenericArray, GetEncapsulator, GetRecipientPublicKeyBytes};
+//use crate::kem_with_kdf::{CombinerNoKeys, KemWithKdf};
+use crate::{Array, ArrayLength, ArraySize, Capsulator, CryptoRngCore, DecodeGenericArray, Encapsulate, EncapsulateDeterministic2, EncodeGenericArray, GenerateDeterministic3, GenerateDeterministic4};
+use crate::{GenericArray, GetEncapsulator, GetRecipientPublicKeyBytes};
 #[cfg(all(feature="rustcrypto-ml-kem", feature="rustcrypto-sha3"))]
 use cipher::consts::U16;
+use cipher::{InvalidLength, KeyInit, KeySizeUser};
+use cipher::common::KeyExport;
+// #[cfg(all(feature="rustcrypto-ml-kem", feature="rustcrypto-sha3"))]
+// use cipher::consts::U16;
 use kdfs::{misc::PassThroughKdf, Kdf};
-use ml_kem::{self, EncapsulateDeterministic, EncodedSizeUser, KemCore, MlKem768Params};
+use ml_kem::kem::Decapsulator;
+//use ml_kem::{self, EncapsulateDeterministic, EncodedSizeUser, KemCore, MlKem768Params};
+use ml_kem::{FromSeed, Kem, MlKem512, MlKem768, MlKem1024, TryKeyInit};
 use cipher::consts::{U32, U64};
-//use cipher::typenum::Unsigned;
-use std::marker::PhantomData;
+use std::array::TryFromSliceError;
+use std::borrow::Cow;
+use std::convert::Infallible;
+use std::marker::PhantomData; 
 
 
 /// 
 /// Applies a key derivation function to the seed before using it as the new seed for generating ML-KEM keys
 /// 
-impl<M: KemCore, G> GenerateCapsulatorFromSeed for MlKemWrapper<M,G>
-where   M: KemCore<SharedKeySize = U32>,
+impl<M: Kem, G> GenerateDeterministic3 for MlKemWrapper<M,G>
+where   M: Kem<SharedKeySize = U32>,
         M::CiphertextSize: ArrayLength, //<u8>,
+        M: FromSeed,
         //M::SharedKeySize: ArraySize + ArrayLength<u8>,
         G: Kdf + Default,
+        M::DecapsulationKey: KeySizeUser,
+        <M as Kem>::DecapsulationKey: ml_kem::Decapsulate
 {
-    type SeedSize = U64;
+    //type SeedSize = U64;
+    //type SeedSize = <M::DecapsulationKey as KeySizeUser>::KeySize;
+    type SeedSize = M::SeedSize;
+    type Private = <Self as Capsulator>::Decapsulator;
+    type Public = <Self as Capsulator>::Encapsulator;
+    type Error = ();
 
-    fn derive_from_seed(seed: &Array<u8, Self::SeedSize>) -> (Self::Encapsulator, Self::Decapsulator) {
-        let recipient_seed: Array<u8, U64> = G::derive_secret_others(seed, None).unwrap();
+    fn generate_deterministic(seed: &Array<u8, Self::SeedSize>) -> Result<(Self::Public, Self::Private), Self::Error> {
+        let recipient_seed: Array<u8, Self::SeedSize> = G::derive_secret_others(seed, None).unwrap();
         
-        let (seed1, seed2) = recipient_seed.split::<U32>();
-        let (recipient_private, recipient_public) = M::generate_deterministic(&seed1.0.into(), &seed2.0.into());
-        (Self::Encapsulator{recipient_public}, Self::Decapsulator{recipient_private, recipient_seed})
+        // let (seed1, seed2) = recipient_seed.split::<U32>();
+        // let (recipient_private, recipient_public) = M::from_seed(&seed1.0.into(), &seed2.0.into());
+        let ( recipient_private, recipient_public) = M::from_seed(&recipient_seed);
+        Ok((Self::Public{recipient_public}, Self::Private{recipient_private}))
     }
 }
 
@@ -41,12 +61,12 @@ where   M: KemCore<SharedKeySize = U32>,
 /// - Additional derivation function applied to a seed used for key generation
 /// - Storage of initial seed such that the private key can be exported and imported as the seed 
 /// 
-pub struct MlKemWrapper<M: KemCore, G = PassThroughKdf> (PhantomData<M>, PhantomData<G>);
+pub struct MlKemWrapper<M: Kem, G = PassThroughKdf> (PhantomData<M>, PhantomData<G>);
 
 ///
 /// Type representing ML-KEM with a separate key derivation applied to the output
 /// 
-pub type MlKemWithOutputKdf<M,K> = KemWithKdf<MlKemWrapper<M, PassThroughKdf>, CombinerNoKeys, K, U32>;
+//pub type MlKemWithOutputKdf<M,K> = KemWithKdf<MlKemWrapper<M, PassThroughKdf>, CombinerNoKeys, K, U32>;
 
 #[cfg(all(feature="rustcrypto-ml-kem", feature="rustcrypto-sha3"))]
 pub type MlKem768WithX963KdfU16 = KemWithKdf<MlKemWrapper<ml_kem::MlKem768, PassThroughKdf>, CombinerNoKeys, kdfs::ansi_x9_63::X963Kdf<sha3::Sha3_256>, U16>;
@@ -54,26 +74,27 @@ pub type MlKem768WithX963KdfU16 = KemWithKdf<MlKemWrapper<ml_kem::MlKem768, Pass
 ///
 /// Type representing ML-KEM with a separate key derivation applied during derivation from seed
 /// 
-pub type MlKemWithSeedKdf<M,K> = KemWithKdf<MlKemWrapper<M, K>, CombinerNoKeys, PassThroughKdf, U32>;
+//pub type MlKemWithSeedKdf<M,K> = KemWithKdf<MlKemWrapper<M, K>, CombinerNoKeys, PassThroughKdf, U32>;
 
 
 impl<M, G> Capsulator for MlKemWrapper<M,G>
 where 
-    M: KemCore<SharedKeySize = U32>,
-    M: KemCore,
-    //M::SharedKeySize: ArrayLength<u8> + ArraySize,
-    M::CiphertextSize: ArrayLength, //<u8>,
+    M: Kem<SharedKeySize = U32> + FromSeed,
+    M::CiphertextSize: ArrayLength,
     G: Kdf + Default,
+    M::DecapsulationKey: KeySizeUser,
+
+    <M as Kem>::DecapsulationKey: ml_kem::Decapsulate
 {
     type Encapsulator = MlKemEncapsulator<M>;
     type Decapsulator = MlKemDecapsulator<M>;
     type CiphertextSize = M::CiphertextSize;
     type SharedKeySize = M::SharedKeySize;
     
-    fn generate ( rng: &mut impl CryptoRngCore ) -> (Self::Encapsulator, Self::Decapsulator) {
+    fn generate_from_rng ( rng: &mut impl CryptoRngCore ) -> (Self::Encapsulator, Self::Decapsulator) {
         let mut seed = Array::default();
         rng.fill_bytes(&mut seed);
-        Self::derive_from_seed(&seed)
+        Self::generate_deterministic(&seed).unwrap()
     }
 }
 
@@ -85,37 +106,96 @@ where
 /// - a KDF to apply after key derivation as used with some KEMs
 /// - a configurable output length, L
 /// 
-pub struct MlKemDecapsulator<M: KemCore> //, LE = <<M as KemCore>::DecapsulationKey as KeySizeUser>::KeySize> 
+pub struct MlKemDecapsulator<M: Kem + FromSeed> //, LE = <<M as KemCore>::DecapsulationKey as KeySizeUser>::KeySize> 
 {
     recipient_private: M::DecapsulationKey,
-    recipient_seed: Array<u8, U64>,
 }
 
-impl<M: KemCore> EncodedSizeUser2 for MlKemDecapsulator<M>
- where <<M as KemCore>::DecapsulationKey as EncodedSizeUser>::EncodedSize: ArrayLength, //<u8>,
+
+impl<M: Kem + FromSeed> KeySizeUser for MlKemDecapsulator<M>
+ where M::DecapsulationKey: KeySizeUser
 {
-    type EncodedSize = U64;
+    type KeySize = <M::DecapsulationKey as KeySizeUser>::KeySize;
+}
 
-    fn from_bytes(seed: &crate::Encoded<Self>) -> Self {
-        // let (d,z) = seed.split_at(U32::USIZE);
-        // let (recipient_private, _) = M::generate_deterministic(&d.try_into().unwrap(), &z.try_into().unwrap());
-        let (d,z) = seed.as_ha0_4().split::<U32>();
-        let (recipient_private, _) = M::generate_deterministic(&d.0.into(), &z.0.into());
-        Self { recipient_private, recipient_seed: Array::try_from(seed.as_slice()).unwrap() }
+impl<M: Kem> KeyInit for MlKemDecapsulator<M>
+where M::DecapsulationKey: KeyInit
+{
+    fn new(key: &cipher::Key<Self>) -> Self {
+        Self { recipient_private: M::DecapsulationKey::new(&key)}
     }
+}
 
-    fn as_bytes(&self) -> crate::Encoded<Self> {
-        GenericArray::from_slice(&self.recipient_seed).clone()
+impl <M: Kem + FromSeed> KeyExport for MlKemDecapsulator<M>
+where M::DecapsulationKey: KeyExport
+{
+    fn to_bytes(&self) -> cipher::Key<Self> {
+        self.recipient_private.to_bytes()
+    }
+}
+
+impl <M: Kem> TryFrom<&[u8]> for MlKemDecapsulator<M>
+where M::DecapsulationKey: KeyInit //: FromSeed,
+{
+    type Error = TryFromSliceError; //InvalidLength;
+
+    fn try_from(value: &[u8]) -> Result<Self, Self::Error> {
+        Ok(Self::new_from_slice(value).unwrap())
     }
 }
 
 
-impl <M: KemCore> Decapsulate<GenericArray<u8, M::CiphertextSize>, Array<u8, M::SharedKeySize>> for MlKemDecapsulator<M>
+impl <M: Kem> GenerateDeterministic4 for MlKemDecapsulator<M>
+where M::DecapsulationKey: KeyInit
+{
+    type SeedSize = <M::DecapsulationKey as KeySizeUser>::KeySize;
+
+    type Error = ();
+
+    fn generate_deterministic(seed: &Array::<u8, Self::SeedSize>) -> Result<Self, Self::Error> where Self: Sized {
+        Ok(Self::new(seed))
+    }
+}
+
+// impl <M: Kem + FromSeed> EncodeSeed for MlKemDecapsulator<M>
+// where M::DecapsulationKey: KeyExport
+// {
+//     type EncodedSize = <M::DecapsulationKey as KeySizeUser>::KeySize;
+
+//     fn from_seed_bytes(_enc: &Array::<u8, Self::EncodedSize>) -> Self {
+//         todo!()
+//     }
+
+//     fn as_seed_bytes(&self) -> Option<Array::<u8, Self::EncodedSize>> {
+//         Some(self.recipient_private.to_bytes())
+//     }
+// }
+// impl<M: Kem> EncodedSizeUser2 for MlKemDecapsulator<M>
+//  where <<M as Kem>::DecapsulationKey as EncodedSizeUser>::EncodedSize: ArrayLength, //<u8>,
+// {
+//     type EncodedSize = U64;
+
+//     fn from_bytes(seed: &crate::Encoded<Self>) -> Self {
+//         // let (d,z) = seed.split_at(U32::USIZE);
+//         // let (recipient_private, _) = M::generate_deterministic(&d.try_into().unwrap(), &z.try_into().unwrap());
+//         let (d,z) = seed.as_ha0_4().split::<U32>();
+//         let (recipient_private, _) = M::generate_deterministic(&d.0.into(), &z.0.into());
+//         Self { recipient_private, recipient_seed: Array::try_from(seed.as_slice()).unwrap() }
+//     }
+
+//     fn as_bytes(&self) -> crate::Encoded<Self> {
+//         GenericArray::from_slice(&self.recipient_seed).clone()
+//     }
+// }
+
+
+impl <M: Kem + FromSeed> crate::Decapsulate<GenericArray<u8, M::CiphertextSize>, Array<u8, M::SharedKeySize>> for MlKemDecapsulator<M>
 where 
-    //M: KemCore<SharedKeySize=U32>,
+    //M: Kem<SharedKeySize=U32>,
     M::SharedKeySize: ArraySize,
     M::CiphertextSize: ArrayLength, //<u8>,
-    M::DecapsulationKey: Decapsulate<ml_kem::array::Array<u8, M::CiphertextSize>, ml_kem::array::Array<u8, M::SharedKeySize>>,
+    //M::DecapsulationKey: ml_kem::kem::Decapsulate<ml_kem::array::Array<u8, M::CiphertextSize>, ml_kem::array::Array<u8, M::SharedKeySize>>,
+    M::DecapsulationKey: ml_kem::kem::Decapsulate,
 {   
     type Error = ();
     fn decapsulate(&self, encapsulated_key: &GenericArray<u8, M::CiphertextSize>) -> Result<Array<u8, M::SharedKeySize>, Self::Error> {
@@ -123,55 +203,39 @@ where
         //let ek = ml_kem::array::Array::<u8, M::CiphertextSize>::from(encapsulated_key.as_ref());
         let Ok(encapsulated_key2) = ml_kem::array::Array::try_from(encapsulated_key.as_slice()) else { return Err(())};
 
+        //use ml_kem::kem::Decapsulate;
+        use ml_kem::kem::TryDecapsulate;
         //let encapsulated_key2 = GenericArray
-        let Ok(ss) = self.recipient_private.decapsulate(&encapsulated_key2) else { return Err(())};
+        //let Ok(ss) = self.recipient_private.try_decapsulate(&encapsulated_key2) else { return Err(())};
+        let ss = self.recipient_private.try_decapsulate(&encapsulated_key2).map_err(|_| ())?;
         //Ok ( Array::from(ss.0) )
         //Ok (ss.0.into())
         Ok(Array::try_from(ss.as_slice()).unwrap())
     }
 }
 
-impl GetEncapsulator for MlKemDecapsulator<ml_kem::MlKem768>
+impl<M:Kem> GetEncapsulator for MlKemDecapsulator<M>
+where M::DecapsulationKey: Decapsulator,
+    M: FromSeed
 {
-    type Encapsulator = MlKemEncapsulator<ml_kem::MlKem768>;
-    fn get_encapsulator(&self) -> Self::Encapsulator {
-        Self::Encapsulator { recipient_public: self.recipient_private.encapsulation_key().clone()}
-    }
-}
-impl GetEncapsulator for MlKemDecapsulator<ml_kem::MlKem1024>
-{
-    type Encapsulator = MlKemEncapsulator<ml_kem::MlKem1024>;
-    fn get_encapsulator(&self) -> Self::Encapsulator {
+    type Encapsulator = MlKemEncapsulator<M>;
+    fn encapsulation_key(&self) -> Self::Encapsulator {
         Self::Encapsulator { recipient_public: self.recipient_private.encapsulation_key().clone()}
     }
 }
 
-impl GetRecipientPublicKeyBytes for MlKemDecapsulator<ml_kem::MlKem512>
-{
-    type EncodedLen = <<ml_kem::MlKem512 as KemCore>::EncapsulationKey as EncodedSizeUser>::EncodedSize;
 
-    fn get_recipient_public_key_bytes(&self) -> GenericArray<u8, Self::EncodedLen> {
-        *GenericArray::from_slice(self.recipient_private.encapsulation_key().as_bytes().as_slice())
+impl<M: Kem> GetRecipientPublicKeyBytes for MlKemDecapsulator<M>
+where M: FromSeed,
+    <M::EncapsulationKey as KeySizeUser>::KeySize: ArrayLength,
+{
+    type EncodedLen = <<M as Kem>::EncapsulationKey as KeySizeUser>::KeySize;
+
+    fn get_recipient_public_key_bytes<'a>(&'a self) -> Cow<'a, [u8]> {
+        self.recipient_private.encapsulation_key().to_bytes().to_vec().into()
     }
 }
 
-impl GetRecipientPublicKeyBytes for MlKemDecapsulator<ml_kem::MlKem768>
-{
-    type EncodedLen = <<ml_kem::MlKem768 as KemCore>::EncapsulationKey as EncodedSizeUser>::EncodedSize;
-
-    fn get_recipient_public_key_bytes(&self) -> GenericArray<u8, Self::EncodedLen> {
-        *GenericArray::from_slice(self.recipient_private.encapsulation_key().as_bytes().as_slice())
-    }
-}
-
-impl GetRecipientPublicKeyBytes for MlKemDecapsulator<ml_kem::MlKem1024>
-{
-    type EncodedLen = <<ml_kem::MlKem1024 as KemCore>::EncapsulationKey as EncodedSizeUser>::EncodedSize;
-
-    fn get_recipient_public_key_bytes(&self) -> GenericArray<u8, Self::EncodedLen> {
-        *GenericArray::from_slice(self.recipient_private.encapsulation_key().as_bytes().as_slice())
-    }
-}
 
 
 
@@ -179,44 +243,81 @@ impl GetRecipientPublicKeyBytes for MlKemDecapsulator<ml_kem::MlKem1024>
 ///
 /// Wrapper around an ML-KEM encapsulation key which provides traits used by other encapsulators and decapsulators used in this package
 ///
-pub struct MlKemEncapsulator<M: KemCore> 
+pub struct MlKemEncapsulator<M: Kem> 
 { 
     recipient_public: M::EncapsulationKey,
 }
 
-impl <M: KemCore> EncodedSizeUser2 for MlKemEncapsulator<M>
-where 
-    M::EncapsulationKey: EncodedSizeUser,
-    <M::EncapsulationKey as EncodedSizeUser>::EncodedSize: ArrayLength, //<u8>
+impl <M: Kem> KeySizeUser for MlKemEncapsulator<M>
+where M::EncapsulationKey: KeySizeUser,
 {
-    type EncodedSize = <M::EncapsulationKey as EncodedSizeUser>::EncodedSize;
+    type KeySize = <M::EncapsulationKey as KeySizeUser>::KeySize;
+}
 
-    fn as_bytes(&self) -> crate::Encoded<Self> {
-        GenericArray::from_slice(self.recipient_public.as_bytes().as_slice()).clone()
-    }
-    
-    fn from_bytes(encoded_recipient_public: &crate::Encoded<Self>) -> Self {
-        let recipient_public = M::EncapsulationKey::from_bytes(&ml_kem::array::Array::try_from(encoded_recipient_public.as_slice()).unwrap());
-        Self{recipient_public }
+impl <M: Kem> KeyExport for MlKemEncapsulator<M>
+{
+    fn to_bytes(&self) -> cipher::Key<Self> {
+        self.recipient_public.to_bytes()
     }
 }
 
-impl <M: KemCore> EncodeGenericArray<Self> for MlKemEncapsulator<M>
-where M::EncapsulationKey: EncodedSizeUser,
-    <M::EncapsulationKey as EncodedSizeUser>::EncodedSize: ArrayLength, //<u8>
+impl<M> KeyInit for MlKemEncapsulator<M>
+where M: Kem,
+    M::EncapsulationKey: TryKeyInit
 {
-    type EncodedLen = <M::EncapsulationKey as EncodedSizeUser>::EncodedSize;
+    fn new(key: &cipher::Key<Self>) -> Self {
+        Self{recipient_public: M::EncapsulationKey::new(key).unwrap() }
+    }
+}
+
+impl <M: Kem> TryFrom<&[u8]> for MlKemEncapsulator<M>
+where 
+    M::EncapsulationKey: TryKeyInit
+{
+    type Error = InvalidLength;
+
+    fn try_from(value: &[u8]) -> Result<Self, Self::Error> {
+        Self::new_from_slice(value)
+    }
+}
+
+// impl <M: Kem> EncodedSizeUser2 for MlKemEncapsulator<M>
+// where 
+//     M::EncapsulationKey: EncodedSizeUser,
+//     <M::EncapsulationKey as EncodedSizeUser>::EncodedSize: ArrayLength, //<u8>
+// {
+//     type EncodedSize = <M::EncapsulationKey as EncodedSizeUser>::EncodedSize;
+
+//     fn as_bytes(&self) -> crate::Encoded<Self> {
+//         GenericArray::from_slice(self.recipient_public.as_bytes().as_slice()).clone()
+//     }
+    
+//     fn from_bytes(encoded_recipient_public: &crate::Encoded<Self>) -> Self {
+//         let recipient_public = M::EncapsulationKey::from_bytes(&ml_kem::array::Array::try_from(encoded_recipient_public.as_slice()).unwrap());
+//         Self{recipient_public }
+//     }
+// }
+
+impl <M: Kem> EncodeGenericArray<Self> for MlKemEncapsulator<M>
+where M::EncapsulationKey: KeySizeUser,
+    <M::EncapsulationKey as KeySizeUser>::KeySize: ArrayLength,
+{
+    type EncodedLen = <M::EncapsulationKey as KeySizeUser>::KeySize;
 
     fn encode(source: &Self) -> GenericArray<u8, Self::EncodedLen> {
-        GenericArray::from_slice(source.recipient_public.as_bytes().as_slice()).clone()
+        GenericArray::from_slice(source.recipient_public.to_bytes().as_slice()).clone()
     }
 }
 
-impl <M: KemCore> DecodeGenericArray<Self> for MlKemEncapsulator<M>
-where M::EncapsulationKey: EncodedSizeUser,
-    <M::EncapsulationKey as EncodedSizeUser>::EncodedSize: ArrayLength + ArraySize, //<u8>, // + ArraySize,
+impl <M: Kem> DecodeGenericArray<Self> for MlKemEncapsulator<M>
+where //M::EncapsulationKey: EncodedSizeUser,
+    //<M::EncapsulationKey as EncodedSizeUser>::EncodedSize: ArrayLength + ArraySize, //<u8>, // + ArraySize,
+    M::EncapsulationKey: KeySizeUser,
+    <M::EncapsulationKey as KeySizeUser>::KeySize: ArrayLength,
+    M::EncapsulationKey: TryKeyInit,
 {
-    type EncodedLen = <M::EncapsulationKey as EncodedSizeUser>::EncodedSize;
+    //type EncodedLen = <M::EncapsulationKey as EncodedSizeUser>::EncodedSize;
+    type EncodedLen = <M::EncapsulationKey as KeySizeUser>::KeySize;
     type Error = ();
 
     fn decode(encoded_bytes: &GenericArray<u8, Self::EncodedLen>) -> Result<Self, Self::Error> {
@@ -229,19 +330,23 @@ where M::EncapsulationKey: EncodedSizeUser,
         
         //let encoded_bytes2 = encoded_bytes.as_hybrid_array::<Self::EncodedLen>().unwrap();
         //let recipient_public = M::EncapsulationKey::from_bytes(&ml_kem::array::Array::try_from(encoded_bytes.as_slice()).unwrap());
-        let recipient_public = M::EncapsulationKey::from_bytes(&ml_kem::array::Array::from(encoded_bytes2));
+        //let recipient_public = M::EncapsulationKey::from_bytes(&ml_kem::array::Array::from(encoded_bytes2));
+        let recipient_public = M::EncapsulationKey::new(&encoded_bytes2).unwrap();
         Ok(Self{recipient_public })
     }
 }
 
 
-impl <M: KemCore> Encapsulate<GenericArray<u8, M::CiphertextSize>, Array<u8, M::SharedKeySize>> for MlKemEncapsulator<M>
+impl <M: Kem> Encapsulate<GenericArray<u8, M::CiphertextSize>, Array<u8, M::SharedKeySize>> for MlKemEncapsulator<M>
 where M::CiphertextSize: ArrayLength, //<u8>,
     M::SharedKeySize: kdfs::hybrid_array::ArraySize,
 {
     type Error = ();
-    fn encapsulate(&self, rng: &mut impl CryptoRngCore) -> Result<(GenericArray<u8, M::CiphertextSize>, Array<u8, M::SharedKeySize>), Self::Error> {
-        let (ct, ss) = self.recipient_public.encapsulate(rng).unwrap();
+    fn encapsulate(&self, _rng: &mut impl CryptoRngCore) -> Result<(GenericArray<u8, M::CiphertextSize>, Array<u8, M::SharedKeySize>), Self::Error> {
+        use ml_kem::kem::Encapsulate;
+    
+        //let (ct, ss) = self.recipient_public.encapsulate_with_rng(rng);
+        let (ct, ss) = self.recipient_public.encapsulate();
         //let derived_ss = self.kdf.derive_self_secret_other::<L>(&ss, &[]);
         let ct_ga = GenericArray::from_slice(&ct.as_slice());
         //let ct_ga = GenericArray::from_ha0_4(ct.0.into());
@@ -250,15 +355,61 @@ where M::CiphertextSize: ArrayLength, //<u8>,
     }
 }
 
-impl <M: KemCore> EncapsulateDeterministic2<GenericArray<u8, M::CiphertextSize>, Array<u8, M::SharedKeySize>> for MlKemEncapsulator<M>
-where M::CiphertextSize: ArrayLength, //<u8>,
-      M::SharedKeySize: ArraySize,
+// impl <M: Kem> EncapsulateDeterministic2<GenericArray<u8, M::CiphertextSize>, Array<u8, M::SharedKeySize>> for MlKemEncapsulator<M>
+// where M::CiphertextSize: ArrayLength, //<u8>,
+//       M::SharedKeySize: ArraySize,
+// {
+//     type Error = ();
+//     type SeedSize = U32;
+//     fn encapsulate_deterministic(&self, seed: &[u8]) -> Result<(GenericArray<u8, M::CiphertextSize>, Array<u8, M::SharedKeySize>), Self::Error> {
+//         let Ok(seed_as_array): Result<ml_kem::B32,_> = seed.try_into() else { return Err(())};
+//         let (ct, ss) = self.recipient_public.encapsulate_deterministic(&seed_as_array).unwrap();
+//         //let derived_ss = self.kdf.derive_self_secret_other::<L>(&ss, &[]);
+//         let ct_ga = GenericArray::from_slice(&ct.as_slice());
+        
+//         Ok((ct_ga.clone(), ss.as_slice().try_into().unwrap()))
+//         //Ok((ct_ga.clone(), ss.0.into() )
+//         //Ok((*ct_ga, derived_ss))
+//     }
+// }
+
+impl EncapsulateDeterministic2<GenericArray<u8, <MlKem512 as Kem>::CiphertextSize>, Array<u8, U32>> for MlKemEncapsulator<MlKem512>
 {
     type Error = ();
     type SeedSize = U32;
-    fn encapsulate_deterministic(&self, seed: &[u8]) -> Result<(GenericArray<u8, M::CiphertextSize>, Array<u8, M::SharedKeySize>), Self::Error> {
+    fn encapsulate_deterministic(&self, seed: &[u8]) -> Result<(GenericArray<u8, <MlKem512 as Kem>::CiphertextSize>, Array<u8, <MlKem512 as Kem>::SharedKeySize>), Self::Error> {
         let Ok(seed_as_array): Result<ml_kem::B32,_> = seed.try_into() else { return Err(())};
-        let (ct, ss) = self.recipient_public.encapsulate_deterministic(&seed_as_array).unwrap();
+        let (ct, ss) = self.recipient_public.encapsulate_deterministic(&seed_as_array);
+        //let derived_ss = self.kdf.derive_self_secret_other::<L>(&ss, &[]);
+        let ct_ga = GenericArray::from_slice(&ct.as_slice());
+        
+        Ok((ct_ga.clone(), ss.as_slice().try_into().unwrap()))
+        //Ok((ct_ga.clone(), ss.0.into() )
+        //Ok((*ct_ga, derived_ss))
+    }
+}
+impl EncapsulateDeterministic2<GenericArray<u8, <MlKem768 as Kem>::CiphertextSize>, Array<u8, U32>> for MlKemEncapsulator<MlKem768>
+{
+    type Error = ();
+    type SeedSize = U32;
+    fn encapsulate_deterministic(&self, seed: &[u8]) -> Result<(GenericArray<u8, <MlKem768 as Kem>::CiphertextSize>, Array<u8, <MlKem768 as Kem>::SharedKeySize>), Self::Error> {
+        let Ok(seed_as_array): Result<ml_kem::B32,_> = seed.try_into() else { return Err(())};
+        let (ct, ss) = self.recipient_public.encapsulate_deterministic(&seed_as_array);
+        //let derived_ss = self.kdf.derive_self_secret_other::<L>(&ss, &[]);
+        let ct_ga = GenericArray::from_slice(&ct.as_slice());
+        
+        Ok((ct_ga.clone(), ss.as_slice().try_into().unwrap()))
+        //Ok((ct_ga.clone(), ss.0.into() )
+        //Ok((*ct_ga, derived_ss))
+    }
+}
+impl EncapsulateDeterministic2<GenericArray<u8, <MlKem1024 as Kem>::CiphertextSize>, Array<u8, U32>> for MlKemEncapsulator<MlKem1024>
+{
+    type Error = ();
+    type SeedSize = U32;
+    fn encapsulate_deterministic(&self, seed: &[u8]) -> Result<(GenericArray<u8, <MlKem1024 as Kem>::CiphertextSize>, Array<u8, <MlKem1024 as Kem>::SharedKeySize>), Self::Error> {
+        let Ok(seed_as_array): Result<ml_kem::B32,_> = seed.try_into() else { return Err(())};
+        let (ct, ss) = self.recipient_public.encapsulate_deterministic(&seed_as_array);
         //let derived_ss = self.kdf.derive_self_secret_other::<L>(&ss, &[]);
         let ct_ga = GenericArray::from_slice(&ct.as_slice());
         
@@ -268,37 +419,56 @@ where M::CiphertextSize: ArrayLength, //<u8>,
     }
 }
 
+// impl <M: Kem> EncapsulateDeterministic2<GenericArray<u8, M::CiphertextSize>, Array<u8, M::SharedKeySize>> for MlKemEncapsulator<M>
+// where M::CiphertextSize: ArrayLength, //<u8>,
+//       M::SharedKeySize: ArraySize,
+// {
+//     type Error = ();
+//     type SeedSize = U32;
+//     fn encapsulate_deterministic(&self, seed: &[u8]) -> Result<(GenericArray<u8, M::CiphertextSize>, Array<u8, M::SharedKeySize>), Self::Error> {
+//         let Ok(seed_as_array): Result<ml_kem::B32,_> = seed.try_into() else { return Err(())};
+//         let (ct, ss) = self.recipient_public.encapsulate_deterministic(&seed_as_array).unwrap();
+//         //let derived_ss = self.kdf.derive_self_secret_other::<L>(&ss, &[]);
+//         let ct_ga = GenericArray::from_slice(&ct.as_slice());
+        
+//         Ok((ct_ga.clone(), ss.as_slice().try_into().unwrap()))
+//         //Ok((ct_ga.clone(), ss.0.into() )
+//         //Ok((*ct_ga, derived_ss))
+//     }
+// }
 
-impl GetEncapsulator for ml_kem::kem::DecapsulationKey<MlKem768Params>
+
+
+// impl GetEncapsulator for ml_kem::ml_kem_768::DecapsulationKey
+// {
+//     type Encapsulator = ml_kem::kem::EncapsulationKey<MlKem768>;
+//     fn encapsulation_key(&self) -> Self::Encapsulator {
+//         self.encapsulation_key().clone()
+//     }
+// }
+
+// impl GetEncapsulator for ml_kem::ml_kem_1024::DecapsulationKey
+// {
+//     type Encapsulator = ml_kem::kem::EncapsulationKey<ml_kem::MlKem1024>;
+//     fn encapsulation_key(&self) -> Self::Encapsulator {
+//         self.encapsulation_key().clone()
+//     }
+// }
+
+impl<M: Kem> GetRecipientPublicKeyBytes for MlKemEncapsulator<M>
+where <<M as Kem>::EncapsulationKey as KeySizeUser>::KeySize: ArrayLength,//<u8>
 {
-    type Encapsulator = ml_kem::kem::EncapsulationKey<MlKem768Params>;
-    fn get_encapsulator(&self) -> Self::Encapsulator {
-        self.encapsulation_key().clone()
+    type EncodedLen = <M::EncapsulationKey as KeySizeUser>::KeySize;
+
+    fn get_recipient_public_key_bytes<'a>(&'a self) -> Cow<'a, [u8]> {
+        self.recipient_public.to_bytes().as_slice().to_vec().into()
     }
 }
 
-impl GetEncapsulator for ml_kem::kem::DecapsulationKey<ml_kem::MlKem1024Params>
-{
-    type Encapsulator = ml_kem::kem::EncapsulationKey<ml_kem::MlKem1024Params>;
-    fn get_encapsulator(&self) -> Self::Encapsulator {
-        self.encapsulation_key().clone()
-    }
-}
 
-impl<M: KemCore> GetRecipientPublicKeyBytes for MlKemEncapsulator<M>
-where <<M as KemCore>::EncapsulationKey as EncodedSizeUser>::EncodedSize: ArrayLength,//<u8>
-{
-    type EncodedLen = <M::EncapsulationKey as EncodedSizeUser>::EncodedSize;
-
-    fn get_recipient_public_key_bytes(&self) -> GenericArray<u8, Self::EncodedLen> {
-        GenericArray::from_slice(self.recipient_public.as_bytes().as_slice()).clone()
-    }
-}
-
-
-// impl<M: KemCore, G, L: ArrayLength<u8>, K: Kdf> MlKemWithAddKeyDer<M,G, L, K>
-// where <M as KemCore>::CiphertextSize: generic_array::ArrayLength<u8>, 
-//     <M as KemCore>::SharedKeySize: generic_array::ArrayLength<u8>,
+// impl<M: Kem, G, L: ArrayLength<u8>, K: Kdf> MlKemWithAddKeyDer<M,G, L, K>
+// where <M as Kem>::CiphertextSize: generic_array::ArrayLength<u8>, 
+//     <M as Kem>::SharedKeySize: generic_array::ArrayLength<u8>,
 //     K: Default
 // {
 //     pub fn new_decapsulator_with_params (private: M::DecapsulationKey, kdf: K) -> MlKemDecapsulator<M, L, K> {
@@ -328,16 +498,16 @@ where <<M as KemCore>::EncapsulationKey as EncodedSizeUser>::EncodedSize: ArrayL
 // }
 
 
-// pub struct MlKemEncapKey<M: KemCore, L: ArrayLength<u8>> 
-//     where <M as KemCore>::CiphertextSize: ArrayLength<u8> 
+// pub struct MlKemEncapKey<M: Kem, L: ArrayLength<u8>> 
+//     where <M as Kem>::CiphertextSize: ArrayLength<u8> 
 // {
 //     bytes: GenericArray::<u8, M::CiphertextSize>,
 //     phantom: PhantomData<L>
 // }
 
-// impl <M: KemCore, L: ArrayLength<u8>> EncappedKey for MlKemEncapKey<M,L> 
-// where <M as KemCore>::CiphertextSize: ArrayLength<u8>,
-//     <M as KemCore>::SharedKeySize: ArrayLength<u8>
+// impl <M: Kem, L: ArrayLength<u8>> EncappedKey for MlKemEncapKey<M,L> 
+// where <M as Kem>::CiphertextSize: ArrayLength<u8>,
+//     <M as Kem>::SharedKeySize: ArrayLength<u8>
 // {
 //     type EncappedKeySize = M::CiphertextSize;
 //     type SharedSecretSize = L;
@@ -355,16 +525,16 @@ where <<M as KemCore>::EncapsulationKey as EncodedSizeUser>::EncodedSize: ArrayL
 // }
 
 
-// impl <M: KemCore,L: ArrayLength<u8>> AsRef<[u8]> for MlKemEncapKey<M,L> 
-// where <M as KemCore>::CiphertextSize: ArrayLength<u8>,
-//     <M as KemCore>::SharedKeySize: ArrayLength<u8>
+// impl <M: Kem,L: ArrayLength<u8>> AsRef<[u8]> for MlKemEncapKey<M,L> 
+// where <M as Kem>::CiphertextSize: ArrayLength<u8>,
+//     <M as Kem>::SharedKeySize: ArrayLength<u8>
 // {
 //     fn as_ref(&self) -> &[u8] {
 //         &self.bytes
 //     }
 // }
-// impl <M: KemCore, L: ArrayLength<u8>> Debug for MlKemEncapKey<M,L> 
-// where <M as KemCore>::CiphertextSize: ArrayLength<u8> 
+// impl <M: Kem, L: ArrayLength<u8>> Debug for MlKemEncapKey<M,L> 
+// where <M as Kem>::CiphertextSize: ArrayLength<u8> 
 // {
 //     fn fmt(&self, _f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
 //         todo!()
@@ -676,4 +846,47 @@ where <<M as KemCore>::EncapsulationKey as EncodedSizeUser>::EncodedSize: ArrayL
 //     }
 // }
 
+
+impl Capsulator for MlKem768 
+{
+    type Encapsulator = ml_kem::ml_kem_768::EncapsulationKey;
+
+    type Decapsulator = MlKemDecapsulator<MlKem768>;
+
+    type SharedKeySize = <MlKem768 as Kem>::SharedKeySize;
+
+    type CiphertextSize = <MlKem768 as Kem>::CiphertextSize;
+
+    fn generate_from_rng ( rng: &mut impl CryptoRngCore ) -> (Self::Encapsulator, Self::Decapsulator) {
+        todo!()
+    }
+}
+
+impl Encapsulate<GenericArray<u8, <MlKem768 as Kem>::CiphertextSize>, Array<u8, <MlKem768 as Kem>::SharedKeySize>> for ml_kem::ml_kem_768::EncapsulationKey
+{
+    type Error = ();
+    fn encapsulate(&self, _rng: &mut impl CryptoRngCore) -> Result<(GenericArray<u8, <MlKem768 as Kem>::CiphertextSize>, Array<u8, <MlKem768 as Kem>::SharedKeySize>), Self::Error> {
+        todo!()
+    }
+}
+
+impl GetRecipientPublicKeyBytes for ml_kem::ml_kem_768::EncapsulationKey
+{
+    type EncodedLen = <<MlKem768 as Kem>::EncapsulationKey as KeySizeUser>::KeySize;
+
+    fn get_recipient_public_key_bytes<'a>(&'a self) -> Cow<'a, [u8]> {
+        self.to_bytes().as_slice().to_vec().into()
+    }
+}
+impl GenerateDeterministic3 for MlKem768
+{
+    type SeedSize = U64;
+    type Public = <MlKem768 as Kem>::EncapsulationKey;
+    type Private = <MlKem768 as Kem>::DecapsulationKey;
+    type Error = Infallible;
+
+    fn generate_deterministic(seed: &Array::<u8, Self::SeedSize>) -> Result<(Self::Public, Self::Private), Self::Error> {
+        todo!()
+    }
+}
 

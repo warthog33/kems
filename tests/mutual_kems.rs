@@ -1,9 +1,12 @@
 use std::marker::PhantomData;
 
+use cipher::KeySizeUser;
+use cipher::common::KeyExport;
+use hmac::KeyInit;
 use kdfs::ansi_x9_63::X963Kdf;
 use kdfs::{Kdf};
 use kdfs::hybrid_array::{Array, ArraySize};
-use kems::{Capsulator, CryptoRngCore, EncodedSizeUser2, Decapsulate, Encapsulate};
+use kems::{Capsulator, CryptoRngCore, Decapsulate, Encapsulate};
 use kems::rfc5753::{DhSinglePassStdDhSha256KdfScheme, DhSinglePassStdDhSha384KdfScheme, DhSinglePassStdDhSha512KdfScheme};
 use kems::generic_array::{ GenericArray, typenum::{U16, U32, U48, U64}};
 use p256::NistP256;
@@ -103,8 +106,8 @@ fn test_mkem_1()
 {
     type DhTwoPassStdDhSha256KdfScheme = TwoPassKem2S<DhSinglePassStdDhSha256KdfScheme<NistP256,U32>,DhSinglePassStdDhSha256KdfScheme<NistP256,U32>, U16>;
 
-    let (encapsulator1, decapsulator1) = DhSinglePassStdDhSha256KdfScheme::<NistP256,U32>::generate(&mut OsRng);
-    let (encapsulator2, decapsulator2) = DhSinglePassStdDhSha256KdfScheme::<NistP256,U32>::generate(&mut OsRng);
+    let (encapsulator1, decapsulator1) = DhSinglePassStdDhSha256KdfScheme::<NistP256,U32>::generate_from_rng(&mut OsRng);
+    let (encapsulator2, decapsulator2) = DhSinglePassStdDhSha256KdfScheme::<NistP256,U32>::generate_from_rng(&mut OsRng);
 
     let u = DhTwoPassStdDhSha256KdfScheme::new_encapsulator(encapsulator1, decapsulator2);
     let v = DhTwoPassStdDhSha256KdfScheme::new_decapsulator(decapsulator1, encapsulator2);
@@ -122,8 +125,8 @@ fn test_mkem_2()
 {
     type DhTwoPassStdDhSha256KdfScheme = TwoPassKem2S<DhSinglePassStdDhSha256KdfScheme<NistP256,U32>,DhSinglePassStdDhSha384KdfScheme<NistP384,U48>, U16>;
 
-    let (encapsulator_u, decapsulator_u) = DhSinglePassStdDhSha256KdfScheme::<NistP256,U32>::generate(&mut OsRng);
-    let (encapsulator_v, decapsulator_v) = DhSinglePassStdDhSha384KdfScheme::<NistP384,U48>::generate(&mut OsRng);
+    let (encapsulator_u, decapsulator_u) = DhSinglePassStdDhSha256KdfScheme::<NistP256,U32>::generate_from_rng(&mut OsRng);
+    let (encapsulator_v, decapsulator_v) = DhSinglePassStdDhSha384KdfScheme::<NistP384,U48>::generate_from_rng(&mut OsRng);
 
     let u = DhTwoPassStdDhSha256KdfScheme::new_encapsulator(encapsulator_u, decapsulator_v );
     let v = DhTwoPassStdDhSha256KdfScheme::new_decapsulator(decapsulator_u, encapsulator_v);
@@ -174,18 +177,18 @@ struct TwoPassKemEncapsulator2S1E <K1: Capsulator, K2: Capsulator, K3: Capsulato
 
 
 impl<K1: Capsulator, K2: Capsulator, K3: Capsulator, L: ArraySize> TwoPassKemEncapsulator2S1E<K1,K2,K3,L>
-where K3::Encapsulator: EncodedSizeUser2 
+where K3::Encapsulator: KeySizeUser + KeyExport, //EncodedSizeUser2 
 {
     //fn encapsulate(&self, rng: &mut impl CryptoRngCore) -> Result<(EK, SS), Self::Error>;
     //fn encapsulate(&self, rng: &mut impl CryptoRngCore) -> Result<(GenericArray<u8, K1::CiphertextSize>, MutualKemDecapsulator<'_,K1,K2,L>),()>
     fn encapsulate1(&self, rng: &mut impl CryptoRngCore) -> Result<(GenericArray<u8, K1::CiphertextSize>, 
-        GenericArray<u8, <<K3 as Capsulator>::Encapsulator as EncodedSizeUser2>::EncodedSize>,
+        Array<u8, <<K3 as Capsulator>::Encapsulator as KeySizeUser>::KeySize>,
         TwoPassKemEncapsulator2S1E2<'_,K1,K2,K3,L>),
         <K1::Encapsulator as Encapsulate<GenericArray<u8, K1::CiphertextSize>, Array<u8, K1::SharedKeySize>>>::Error>
     {
         let (ek, ss) = self.encapsulator.encapsulate(rng)?;
-        let (ephem_encap, ephem_decap) = K3::generate(rng);
-        let ephem_encap_bytes: GenericArray<u8, <<K3 as Capsulator>::Encapsulator as EncodedSizeUser2>::EncodedSize> = ephem_encap.as_bytes();
+        let (ephem_encap, ephem_decap) = K3::generate_from_rng(rng);
+        let ephem_encap_bytes: Array<u8, <<K3 as Capsulator>::Encapsulator as KeySizeUser>::KeySize> = ephem_encap.to_bytes();
         let decapsulator = TwoPassKemEncapsulator2S1E2{decapsulator: &self.decapsulator, ss_uv: ss, ephem_decap, phantom: PhantomData};
         Ok((ek, ephem_encap_bytes, decapsulator))
     }
@@ -222,12 +225,12 @@ struct TwoPassKemDecapsulator2S1E <K1: Capsulator, K2: Capsulator, K3: Capsulato
 }
 
 impl<K1: Capsulator, K2: Capsulator, K3: Capsulator, L: ArraySize> TwoPassKemDecapsulator2S1E<K1,K2,K3,L>
-where K3::Encapsulator: EncodedSizeUser2 
+where K3::Encapsulator: KeySizeUser + KeyInit
 {
     fn decapsulate(&self, 
         rng: &mut impl CryptoRngCore,
         encapsulated_key: &GenericArray<u8, K1::CiphertextSize>, 
-        encapsulated_ephem_key: &GenericArray<u8, <K3::Encapsulator as EncodedSizeUser2>::EncodedSize>) 
+        encapsulated_ephem_key: &Array<u8, <K3::Encapsulator as KeySizeUser>::KeySize>) 
         -> Result<(Array<u8, L>, 
             GenericArray<u8, K2::CiphertextSize>,
             GenericArray<u8, K3::CiphertextSize>),
@@ -235,7 +238,7 @@ where K3::Encapsulator: EncodedSizeUser2
     {
         let ss_uv = self.self_private.decapsulate(encapsulated_key)?;
         //let ephem_ss = self.ephem_decap.decapsulate(encapsulated_ephem_key).unwrap();
-        let ephem_encapsulator = K3::Encapsulator::from_bytes(encapsulated_ephem_key);
+        let ephem_encapsulator = K3::Encapsulator::new(encapsulated_ephem_key);
         let (ek_ephem, ss_ephem) = ephem_encapsulator.encapsulate(rng).unwrap();
 
         let (ek_vu, ss_vu) = self.peer_public.encapsulate(rng).unwrap();
@@ -252,8 +255,8 @@ fn test_mkem_12()
 {
     type DhTwoPassStdDhSha256KdfScheme = TwoPassKem2S1E<DhSinglePassStdDhSha256KdfScheme<NistP256,U32>,DhSinglePassStdDhSha256KdfScheme<NistP256,U32>,DhSinglePassStdDhSha256KdfScheme<NistP256,U32>, U16>;
 
-    let (encapsulator1, decapsulator1) = DhSinglePassStdDhSha256KdfScheme::<NistP256,U32>::generate(&mut OsRng);
-    let (encapsulator2, decapsulator2) = DhSinglePassStdDhSha256KdfScheme::<NistP256,U32>::generate(&mut OsRng);
+    let (encapsulator1, decapsulator1) = DhSinglePassStdDhSha256KdfScheme::<NistP256,U32>::generate_from_rng(&mut OsRng);
+    let (encapsulator2, decapsulator2) = DhSinglePassStdDhSha256KdfScheme::<NistP256,U32>::generate_from_rng(&mut OsRng);
 
     //let mut u = MutualKem2::<DhSinglePassStdDhSha256KdfScheme::<NistP256,U32>, DhSinglePassStdDhSha256KdfScheme::<NistP256,U32>, U16>{encapsulator: encapsulator1, decapsulator: decapsulator2, intermediate_key: None, phantom: PhantomData};
     let u = DhTwoPassStdDhSha256KdfScheme::new_encapsulator_u(encapsulator1, decapsulator2 );
@@ -278,8 +281,8 @@ fn test_mkem_22()
 {
     type DhTwoPassStdDhSha256KdfScheme = TwoPassKem2S1E<DhSinglePassStdDhSha256KdfScheme<NistP256,U32>,DhSinglePassStdDhSha384KdfScheme<NistP384,U48>,DhSinglePassStdDhSha512KdfScheme<NistP521,U64>, U16>;
 
-    let (encapsulator_u, decapsulator_u) = DhSinglePassStdDhSha384KdfScheme::<NistP384,U48>::generate(&mut OsRng);
-    let (encapsulator_v, decapsulator_v) = DhSinglePassStdDhSha256KdfScheme::<NistP256,U32>::generate(&mut OsRng);
+    let (encapsulator_u, decapsulator_u) = DhSinglePassStdDhSha384KdfScheme::<NistP384,U48>::generate_from_rng(&mut OsRng);
+    let (encapsulator_v, decapsulator_v) = DhSinglePassStdDhSha256KdfScheme::<NistP256,U32>::generate_from_rng(&mut OsRng);
 
     // let u = MutualKemEncapsulator::<DhSinglePassStdDhSha256KdfScheme::<NistP256,U32>, DhSinglePassStdDhSha384KdfScheme::<NistP384,U48>, U16>{encapsulator: encapsulator1, decapsulator: decapsulator2, phantom: PhantomData};
     // let v = MutualKemEncapsulator::<DhSinglePassStdDhSha384KdfScheme::<NistP384,U48>, DhSinglePassStdDhSha256KdfScheme::<NistP256,U32>, U16>{encapsulator: encapsulator2, decapsulator: decapsulator1, phantom: PhantomData};
@@ -335,17 +338,17 @@ struct TwoPassKemEncapsulator1S1E <K1: Capsulator, K2: Capsulator, L: ArraySize>
 
 
 impl<K1: Capsulator, K2: Capsulator, L: ArraySize> TwoPassKemEncapsulator1S1E<K1,K2,L>
-where K2::Encapsulator: EncodedSizeUser2
+where K2::Encapsulator: KeySizeUser + KeyExport
 {
     fn encapsulate1(&'_ self, rng: &mut impl CryptoRngCore)
-        -> Result<(GenericArray<u8, <<K2 as Capsulator>::Encapsulator as EncodedSizeUser2>::EncodedSize>,
+        -> Result<(Array<u8, <<K2 as Capsulator>::Encapsulator as KeySizeUser>::KeySize>,
                    TwoPassKemEncapsulator1S1E2<'_, K1,K2,L>),
                 ()>
     {
         //let (ek, ss) = self.encapsulator.encapsulate(rng)?;
-        let (ephem_encapsulator, ephem_decapsulator) = K2::generate(rng);
+        let (ephem_encapsulator, ephem_decapsulator) = K2::generate_from_rng(rng);
         //let decapsulator = TwoPassKemENcapsulator2S2{decapsulator: &self.decapsulator, intermediate_key: ss, phantom: PhantomData};
-        let encapsulator_as_bytes = ephem_encapsulator.as_bytes();
+        let encapsulator_as_bytes = ephem_encapsulator.to_bytes();
 
         Ok((encapsulator_as_bytes, TwoPassKemEncapsulator1S1E2{decapsulator: &self.decapsulator, ephem_decapsulator, phantom: PhantomData}))
     }
@@ -380,14 +383,14 @@ struct TwoPassKemDecapsulator1S1E <K1: Capsulator, K2: Capsulator, L: ArraySize>
 }
 
 impl<'a, K1: Capsulator, K2: Capsulator, L: ArraySize> TwoPassKemDecapsulator1S1E<K1,K2,L>
-where K2::Encapsulator: EncodedSizeUser2
+where K2::Encapsulator: KeySizeUser + KeyInit
 {
-    fn recapsulate(&self, rng: &mut impl CryptoRngCore, ephem_public_key: &GenericArray<u8, <<K2 as Capsulator>::Encapsulator as EncodedSizeUser2>::EncodedSize>)
+    fn recapsulate(&self, rng: &mut impl CryptoRngCore, ephem_public_key: &Array<u8, <<K2 as Capsulator>::Encapsulator as KeySizeUser>::KeySize>)
      -> Result<(Array<u8, L>, GenericArray<u8, K1::CiphertextSize>, GenericArray<u8, K2::CiphertextSize>), ()> 
         //<K2::Decapsulator as Decapsulate<GenericArray<u8, K2::CiphertextSize>, Array<u8, K2::SharedKeySize>>>::Error>
     {
         let (ek1, ss1) = self.encapsulator.encapsulate(rng).map_err(|_e|())?;
-        let ephem_public = K2::Encapsulator::from_bytes(ephem_public_key);
+        let ephem_public = K2::Encapsulator::new(ephem_public_key);
         let (ek2, ss2) = ephem_public.encapsulate(rng).unwrap();
         
         let ss3 = X963Kdf::<Sha256>::derive_secrets_other([ss1.as_slice(), &ss2], &[]);
@@ -401,7 +404,7 @@ fn test_mkem_1s1e_1()
 {
     type DhTwoPassStdDhSha256KdfScheme = TwoPassKem1S1E<DhSinglePassStdDhSha256KdfScheme<NistP256,U32>,DhSinglePassStdDhSha256KdfScheme<NistP256,U32>, U16>;
 
-    let (encapsulator1, decapsulator1) = DhSinglePassStdDhSha256KdfScheme::<NistP256,U32>::generate(&mut OsRng);
+    let (encapsulator1, decapsulator1) = DhSinglePassStdDhSha256KdfScheme::<NistP256,U32>::generate_from_rng(&mut OsRng);
     //let (encapsulator2, decapsulator2) = DhSinglePassStdDhSha256KdfScheme::<NistP256,U32>::generate(&mut OsRng);
 
     //let mut u = MutualKem2::<DhSinglePassStdDhSha256KdfScheme::<NistP256,U32>, DhSinglePassStdDhSha256KdfScheme::<NistP256,U32>, U16>{encapsulator: encapsulator1, decapsulator: decapsulator2, intermediate_key: None, phantom: PhantomData};
@@ -427,7 +430,7 @@ fn test_mkem_1s1e_2()
 {
     type DhTwoPassStdDhSha256KdfScheme = TwoPassKem1S1E<DhSinglePassStdDhSha256KdfScheme<NistP256,U32>,DhSinglePassStdDhSha384KdfScheme<NistP384,U48>, U16>;
 
-    let (encapsulator_u, decapsulator_u) = DhSinglePassStdDhSha256KdfScheme::<NistP256,U32>::generate(&mut OsRng);
+    let (encapsulator_u, decapsulator_u) = DhSinglePassStdDhSha256KdfScheme::<NistP256,U32>::generate_from_rng(&mut OsRng);
     //let (encapsulator_v, decapsulator_v) = DhSinglePassStdDhSha384KdfScheme::<NistP384,U48>::generate(&mut OsRng);
 
     // let u = MutualKemEncapsulator::<DhSinglePassStdDhSha256KdfScheme::<NistP256,U32>, DhSinglePassStdDhSha384KdfScheme::<NistP384,U48>, U16>{encapsulator: encapsulator1, decapsulator: decapsulator2, phantom: PhantomData};

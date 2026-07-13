@@ -2,12 +2,15 @@
 //! 
 //! A cryptographic break in either KEM will not compromise the overall hybrid KEM.
 //! 
+use std::array::TryFromSliceError;
+use std::borrow::Cow;
 use std::fmt::Debug;
 use std::marker::PhantomData;
 use std::ops::{Add, Sub};
-
-use crate::{Capsulator, CryptoRngCore, Decapsulate, Encapsulate, EncapsulateDeterministic2, EncodeSeed, EncodedSizeUser2, GenerateCapsulatorFromSeed, GetEncapsulator, GetRecipientPublicKeyBytes, Label};
-
+use crate::{Capsulator, CryptoRngCore, Decapsulate, Encapsulate, EncapsulateDeterministic2, GenerateDeterministic3};
+use crate::{GetEncapsulator, GetRecipientPublicKeyBytes, Label};
+use cipher::{KeySizeUser, KeyInit};
+use cipher::common::KeyExport;
 use cipher::typenum::{Sum, Unsigned};
 use generic_array::{ArrayLength, GenericArray};
 use generic_array::sequence::Split;
@@ -15,7 +18,7 @@ use generic_array::sequence::Concat;
 use elliptic_curve::consts::*;
 use kdfs::hybrid_array::{Array, ArraySize};
 use kdfs::Kdf;
-//use x25519_dalek::EphemeralSecret;
+use shake::Shake256;
 
 /// 
 /// Combiner for use with hybrid KEMS. 
@@ -113,14 +116,19 @@ pub struct HybridKem<M: Capsulator, C: Capsulator, COM: HybridCombiner, G> (Phan
 impl<M: Capsulator, C: Capsulator, COM: HybridCombiner,  G> Capsulator for HybridKem<M, C, COM, G>
 where 
     M::Decapsulator: GetEncapsulator,
-    M::Encapsulator: EncodedSizeUser2,
+    M::Encapsulator: GetRecipientPublicKeyBytes, //EncodedSizeUser2,
+    
     M::CiphertextSize: Add<C::CiphertextSize>,
     <M::CiphertextSize as Add<C::CiphertextSize>>::Output: ArrayLength, //<u8>,
-    <M::Decapsulator as GetEncapsulator>::Encapsulator: EncodedSizeUser2,
-
-    C::Encapsulator: EncodedSizeUser2,
+    <M::Decapsulator as GetEncapsulator>::Encapsulator: GetRecipientPublicKeyBytes, //EncodedSizeUser2,
+    
+    //C::Encapsulator: EncodedSizeUser2,
+    C::Encapsulator: GetRecipientPublicKeyBytes,
     C::Decapsulator: GetEncapsulator,
-    <C::Decapsulator as GetEncapsulator>::Encapsulator: EncodedSizeUser2,
+    //<C::Decapsulator as GetEncapsulator>::Encapsulator: EncodedSizeUser2,
+    <C::Decapsulator as GetEncapsulator>::Encapsulator: GetRecipientPublicKeyBytes,
+    
+
     Sum<M::CiphertextSize, C::CiphertextSize>: Sub<M::CiphertextSize, Output=C::CiphertextSize> + ArrayLength, //<u8>,
     
     COM: Default,
@@ -130,9 +138,9 @@ where
     type CiphertextSize = Sum<M::CiphertextSize, C::CiphertextSize>;
     type SharedKeySize = U32;
     
-    fn generate ( rng: &mut impl CryptoRngCore ) -> (Self::Encapsulator, Self::Decapsulator) {
-        let (encapsulator1, decapsulator1) = M::generate(rng);
-        let (encapsulator2, decapsulator2) = C::generate(rng);
+    fn generate_from_rng ( rng: &mut impl CryptoRngCore ) -> (Self::Encapsulator, Self::Decapsulator) {
+        let (encapsulator1, decapsulator1) = M::generate_from_rng(rng);
+        let (encapsulator2, decapsulator2) = C::generate_from_rng(rng);
 
         (HybridEncapsulator{encapsulator1, encapsulator2, phantom: PhantomData}, 
                     HybridDecapsulator{decapsulator1, decapsulator2, seed: None, phantom: PhantomData, phantom2: PhantomData})
@@ -143,71 +151,79 @@ where
 
 
 pub struct SplitSeed;
-impl<M, C, COM> GenerateCapsulatorFromSeed for HybridKem<M, C, COM, SplitSeed>
+impl<M, C, COM> GenerateDeterministic3 for HybridKem<M, C, COM, SplitSeed>
 where   M: Capsulator,
-        M::Encapsulator: EncodedSizeUser2,
-        M: GenerateCapsulatorFromSeed,
+        //M::Encapsulator: EncodedSizeUser2,
+        M: GenerateDeterministic3, //<Public=<M::Encapsulator as Capsulator>::Encapsulator, Private=<M::Decapsulator as Capsulator>::Decapsulator>,
+        M: Capsulator<Encapsulator=<M as GenerateDeterministic3>::Public, Decapsulator=<M as GenerateDeterministic3>::Private>,
         M::CiphertextSize: Add<C::CiphertextSize>,
         M::Decapsulator: GetEncapsulator,
         M::SeedSize: Add<C::SeedSize>,
         Sum<M::CiphertextSize, C::CiphertextSize>: ArrayLength, //<u8>,
-        <M::Decapsulator as GetEncapsulator>::Encapsulator: EncodedSizeUser2,
+        //<M::Decapsulator as GetEncapsulator>::Encapsulator: EncodedSizeUser2,
         <M::SeedSize as Add<C::SeedSize>>::Output: ArraySize,
 
-        C: Capsulator + GenerateCapsulatorFromSeed,
-        C::Encapsulator: EncodedSizeUser2,
+        C: Capsulator + GenerateDeterministic3,
+        C: Capsulator<Encapsulator=<C as GenerateDeterministic3>::Public, Decapsulator=<C as GenerateDeterministic3>::Private>,
+        //C::Encapsulator: EncodedSizeUser2,
         C::Decapsulator: GetEncapsulator,
-        <C::Decapsulator as GetEncapsulator>::Encapsulator: EncodedSizeUser2,
+        //<C::Decapsulator as GetEncapsulator>::Encapsulator: EncodedSizeUser2,
         COM: HybridCombiner + Default,
 
         Sum<M::SeedSize, C::SeedSize>: Sub<M::SeedSize, Output = C::SeedSize>,
         Sum<M::CiphertextSize, C::CiphertextSize>: Sub<M::CiphertextSize, Output=C::CiphertextSize> + ArrayLength, //<u8>,
+
+        //<M as DerivePairFromSeed>::Public: EncodedSizeUser2,
+        <C as GenerateDeterministic3>::Private: GetEncapsulator,
+        <M as GenerateDeterministic3>::Private: GetEncapsulator,
 {
     type SeedSize = Sum<M::SeedSize, C::SeedSize>;
-    fn derive_from_seed(seed: &Array::<u8, Self::SeedSize>) -> (Self::Encapsulator, Self::Decapsulator) {
-
+    type Public = HybridEncapsulator<M,C,COM>;
+    type Private = HybridDecapsulator<M,C,COM,SplitSeed>;
+    type Error = ();
+    fn generate_deterministic(seed: &Array::<u8, Self::SeedSize>) -> Result<(Self::Public, Self::Private), Self::Error> 
+    {
         //let (seed1, seed2) = Array::split_ref::<M::SeedSize>(seed);
         let (seed1, seed2) = seed.split_ref();
-        let (encapsulator1, decapsulator1) = M::derive_from_seed(seed1);
-        let (encapsulator2, decapsulator2) = C::derive_from_seed(seed2);
+        let (encapsulator1, decapsulator1) = M::generate_deterministic(seed1).map_err(|_|())?;
+        let (encapsulator2, decapsulator2) = C::generate_deterministic(seed2).map_err(|_|())?;
 
-        (HybridEncapsulator{encapsulator1, encapsulator2, phantom: PhantomData}, 
-             HybridDecapsulator{decapsulator1, decapsulator2, phantom: PhantomData, seed: None, phantom2: PhantomData})
+        Ok((HybridEncapsulator{encapsulator1, encapsulator2, phantom: PhantomData}, 
+             HybridDecapsulator{decapsulator1, decapsulator2, phantom: PhantomData, seed: None, phantom2: PhantomData}))
     }
 }
 
 
 pub struct ExpandSeed<N: Unsigned, K: Kdf> (PhantomData<N>, PhantomData<K>);
 
-impl<M, C, COM, N: ArraySize, K: Kdf+Default> GenerateCapsulatorFromSeed for HybridKem<M, C, COM, ExpandSeed<N, K>>
-where   M: Capsulator + GenerateCapsulatorFromSeed,
-        C: Capsulator + GenerateCapsulatorFromSeed, 
-        M::Encapsulator: EncodedSizeUser2,
-        C::Encapsulator: EncodedSizeUser2,
-        M::Decapsulator: GetEncapsulator,
-        C::Decapsulator: GetEncapsulator,
+impl<M, C, COM, N: ArraySize, K: Kdf+Default> GenerateDeterministic3 for HybridKem<M, C, COM, ExpandSeed<N, K>>
+where   M: Capsulator + GenerateDeterministic3,
+        M: Capsulator<Encapsulator=<M as GenerateDeterministic3>::Public, Decapsulator=<M as GenerateDeterministic3>::Private>,
+        C: Capsulator + GenerateDeterministic3, 
+        C: Capsulator<Encapsulator=<C as GenerateDeterministic3>::Public, Decapsulator=<C as GenerateDeterministic3>::Private>,
+        
         M::CiphertextSize: Add<C::CiphertextSize>,
         M::SeedSize: Add<C::SeedSize>,
-        //<M::CiphertextSize as Add<C::CiphertextSize>>::Output: ArrayLength<u8>,
         
-        <M::Decapsulator as GetEncapsulator>::Encapsulator: EncodedSizeUser2,
-        <C::Decapsulator as GetEncapsulator>::Encapsulator: EncodedSizeUser2,
         COM: Default + HybridCombiner,
         
         Sum<M::CiphertextSize, C::CiphertextSize>: ArrayLength, //<u8>,
         Sum<M::SeedSize, C::SeedSize>: ArraySize + Sub<M::SeedSize, Output = C::SeedSize>,
-        Sum<M::CiphertextSize, C::CiphertextSize>: Sub<M::CiphertextSize, Output=C::CiphertextSize> + ArrayLength, //<u8>,
 {
     type SeedSize = U32;
-    fn derive_from_seed(seed: &Array::<u8, Self::SeedSize>) -> (Self::Encapsulator, Self::Decapsulator) {
+    type Public = HybridEncapsulator<M,C,COM>;
+    type Private = HybridDecapsulator<M,C,COM,ExpandSeed<N,K>>;
+    type Error = ();
+    fn generate_deterministic(seed: &Array::<u8, Self::SeedSize>) -> Result<(Self::Public, Self::Private), Self::Error> {
+        
         let expanded = K::derive_secret_other::<Sum<M::SeedSize, C::SeedSize>>(seed.as_slice(), &[]).unwrap();
         let (seed1, seed2) = expanded.split(); //Array::split::<M::SeedSize>(expanded);
         
-        let (encapsulator1, decapsulator1) = M::derive_from_seed(&seed1);
-        let (encapsulator2, decapsulator2) = C::derive_from_seed(&seed2);
+        let (encapsulator1, decapsulator1) = M::generate_deterministic(&seed1).map_err(|_|())?;
+        let (encapsulator2, decapsulator2) = C::generate_deterministic(&seed2).map_err(|_|())?;
 
-        (HybridEncapsulator{encapsulator1, encapsulator2, phantom: PhantomData}, 
-             HybridDecapsulator{decapsulator1, decapsulator2, phantom: PhantomData, seed: Some(seed.clone()), phantom2: PhantomData})
+        Ok((HybridEncapsulator{encapsulator1, encapsulator2, phantom: PhantomData}, 
+             HybridDecapsulator{decapsulator1, decapsulator2, phantom: PhantomData, seed: Some(seed.clone()), phantom2: PhantomData}))
     }
 }
 
@@ -215,14 +231,18 @@ where   M: Capsulator + GenerateCapsulatorFromSeed,
 
 pub struct DeriveExpandSeed<N: Unsigned, K: Kdf, KI: Kdf> (PhantomData<N>, PhantomData<K>, PhantomData<KI>);
 
-impl<M, C, COM, N: ArraySize, K, KI> GenerateCapsulatorFromSeed for HybridKem<M, C, COM, DeriveExpandSeed<N, K, KI>>
+impl<M, C, COM, N: ArraySize, K, KI> GenerateDeterministic3 for HybridKem<M, C, COM, DeriveExpandSeed<N, K, KI>>
 where   KI:Kdf+Default,
         K: Kdf+Default,
         COM: HybridCombiner + Default,
-        M: Capsulator + GenerateCapsulatorFromSeed,
-        C: Capsulator + GenerateCapsulatorFromSeed,
-        M::Encapsulator: EncodedSizeUser2,
-        C::Encapsulator: EncodedSizeUser2,
+        M: Capsulator + GenerateDeterministic3,
+        M: Capsulator<Encapsulator=<M as GenerateDeterministic3>::Public, Decapsulator=<M as GenerateDeterministic3>::Private>,
+        
+        C: Capsulator + GenerateDeterministic3,
+        C: Capsulator<Encapsulator=<C as GenerateDeterministic3>::Public, Decapsulator=<C as GenerateDeterministic3>::Private>,
+        
+        //M::Encapsulator: EncodedSizeUser2,
+        //C::Encapsulator: EncodedSizeUser2,
         M::CiphertextSize: Add<C::CiphertextSize>,
         M::Decapsulator: GetEncapsulator,
         C::Decapsulator: GetEncapsulator,
@@ -230,20 +250,26 @@ where   KI:Kdf+Default,
         //<M::SeedSize as Add<C::SeedSize>>::Output: ArraySize,
         //<M::CiphertextSize as Add<C::CiphertextSize>>::Output: ArrayLength<u8>,
         
-        <M::Decapsulator as GetEncapsulator>::Encapsulator: EncodedSizeUser2,
-        <C::Decapsulator as GetEncapsulator>::Encapsulator: EncodedSizeUser2,
+        //<M::Decapsulator as GetEncapsulator>::Encapsulator: EncodedSizeUser2,
+        //<C::Decapsulator as GetEncapsulator>::Encapsulator: EncodedSizeUser2,
 
         Sum<M::CiphertextSize, C::CiphertextSize>: ArrayLength, //<u8>,
         Sum<M::SeedSize, C::SeedSize>: ArraySize + Sub<M::SeedSize, Output = C::SeedSize>,
         Sum<M::CiphertextSize, C::CiphertextSize>: Sub<M::CiphertextSize, Output=C::CiphertextSize> + ArrayLength, //<u8>,
+        <C as GenerateDeterministic3>::Private: GetEncapsulator,
+        <M as GenerateDeterministic3>::Private: GetEncapsulator,
 {
     type SeedSize = U32;
+    type Public = HybridEncapsulator<M,C,COM>;
+    type Private = HybridDecapsulator<M,C,COM,DeriveExpandSeed<N, K, KI>>;
+    type Error = ();
 
-    fn derive_from_seed(seed: &Array::<u8, Self::SeedSize>) -> (Self::Encapsulator, Self::Decapsulator) {
+    fn generate_deterministic(seed: &Array::<u8, Self::SeedSize>) -> Result<(Self::Public, Self::Private), Self::Error> {
+        
         let derived_seed = KI::derive_secret_others(seed.as_slice(), None).unwrap();
         
-        let (encapsulator,decapsulator) = HybridKem::<M, C, COM, ExpandSeed<U32, K>>::derive_from_seed(&derived_seed);
-        (encapsulator, HybridDecapsulator{decapsulator1: decapsulator.decapsulator1, decapsulator2: decapsulator.decapsulator2, phantom: PhantomData, seed: Some(derived_seed), phantom2: PhantomData})
+        let (encapsulator,decapsulator) = HybridKem::<M, C, COM, ExpandSeed<U32, K>>::generate_deterministic(&derived_seed).map_err(|_|())?;
+        Ok((encapsulator, HybridDecapsulator{decapsulator1: decapsulator.decapsulator1, decapsulator2: decapsulator.decapsulator2, phantom: PhantomData, seed: Some(derived_seed), phantom2: PhantomData}))
     }
 }
 
@@ -261,47 +287,75 @@ pub struct HybridEncapsulator<M: Capsulator, T: Capsulator, COM: HybridCombiner>
     phantom: PhantomData<COM>
 }
 
-type EncodedSize<X> = <<X as Capsulator>::Encapsulator as EncodedSizeUser2>::EncodedSize;
+//type EncodedSize<X> = <<X as Capsulator>::Encapsulator as EncodedSizeUser2>::EncodedSize;
 
-impl<M: Capsulator, T: Capsulator, COM: HybridCombiner> EncodedSizeUser2 for HybridEncapsulator<M, T, COM>
-where 
-    T::Encapsulator: EncodedSizeUser2,
-    M::Encapsulator: EncodedSizeUser2,
-    EncodedSize<M>: Add<EncodedSize<T>>,
-    Sum<EncodedSize<M>, EncodedSize<T>>: Sub<EncodedSize<M>, Output=EncodedSize<T>> + ArrayLength, //<u8>,
-{
-    type EncodedSize = Sum<EncodedSize<M>, EncodedSize<T>>;
+// impl<M: Capsulator, T: Capsulator, COM: HybridCombiner> EncodedSizeUser2 for HybridEncapsulator<M, T, COM>
+// where 
+//     T::Encapsulator: EncodedSizeUser2,
+//     M::Encapsulator: EncodedSizeUser2,
+//     EncodedSize<M>: Add<EncodedSize<T>>,
+//     Sum<EncodedSize<M>, EncodedSize<T>>: Sub<EncodedSize<M>, Output=EncodedSize<T>> + ArrayLength, //<u8>,
+// {
+//     type EncodedSize = Sum<EncodedSize<M>, EncodedSize<T>>;
     
-    fn from_bytes(encoded_encapsulator: &crate::Encoded<Self>) -> Self {
-        let (pq_public_key_bytes, trad_public_key_bytes) = encoded_encapsulator.split();
+//     fn from_bytes(encoded_encapsulator: &crate::Encoded<Self>) -> Self {
+//         let (pq_public_key_bytes, trad_public_key_bytes) = encoded_encapsulator.split();
 
-        let encapsulator1 = M::Encapsulator::from_bytes(&pq_public_key_bytes);
-        let encapsulator2 = T::Encapsulator::from_bytes(&trad_public_key_bytes);
+//         let encapsulator1 = M::Encapsulator::from_bytes(&pq_public_key_bytes);
+//         let encapsulator2 = T::Encapsulator::from_bytes(&trad_public_key_bytes);
 
-        Self { encapsulator1, encapsulator2, phantom: PhantomData}
-    }
+//         Self { encapsulator1, encapsulator2, phantom: PhantomData}
+//     }
 
-    fn as_bytes(&self) -> crate::Encoded<Self> {
-        let pq_encap = self.encapsulator1.as_bytes();
-        let trad_encap = self.encapsulator2.as_bytes();
+//     fn as_bytes(&self) -> crate::Encoded<Self> {
+//         let pq_encap = self.encapsulator1.as_bytes();
+//         let trad_encap = self.encapsulator2.as_bytes();
         
-        //pq_encap.concat(trad_encap)
-        generic_array::sequence::Concat::concat(pq_encap, trad_encap)
-    }
-}
+//         //pq_encap.concat(trad_encap)
+//         generic_array::sequence::Concat::concat(pq_encap, trad_encap)
+//     }
+// }
 
+impl<M: Capsulator, T: Capsulator, COM: HybridCombiner> KeySizeUser for HybridEncapsulator<M, T, COM>
+where M::Encapsulator: KeySizeUser,
+    T::Encapsulator: KeySizeUser,
+    <<M as Capsulator>::Encapsulator as KeySizeUser>::KeySize: Add<<<T as Capsulator>::Encapsulator as KeySizeUser>::KeySize>,
+    <<<M as Capsulator>::Encapsulator as KeySizeUser>::KeySize as Add<<<T as Capsulator>::Encapsulator as KeySizeUser>::KeySize>>::Output: ArraySize
+{
+    type KeySize = Sum<<M::Encapsulator as KeySizeUser>::KeySize, <T::Encapsulator as KeySizeUser>::KeySize>;
+} 
+
+impl<M: Capsulator, T: Capsulator, COM: HybridCombiner> KeyExport for HybridEncapsulator<M, T, COM>
+where M::Encapsulator: KeySizeUser + KeyExport,
+    T::Encapsulator: KeySizeUser + KeyExport,
+    <<M as Capsulator>::Encapsulator as KeySizeUser>::KeySize: Add<<<T as Capsulator>::Encapsulator as KeySizeUser>::KeySize>,
+    <<<M as Capsulator>::Encapsulator as KeySizeUser>::KeySize as Add<<<T as Capsulator>::Encapsulator as KeySizeUser>::KeySize>>::Output: ArraySize
+{
+    fn to_bytes(&self) -> cipher::Key<Self> {
+        let pq_encap = self.encapsulator1.to_bytes();
+        let trad_encap = self.encapsulator2.to_bytes();
+        
+        //generic_array::sequence::Concat::concat(pq_encap, trad_encap)
+        pq_encap.concat(trad_encap)
+    }
+} 
 
 impl<M: Capsulator, T: Capsulator, COM: HybridCombiner> GetRecipientPublicKeyBytes for HybridEncapsulator<M, T, COM>
 where 
-    T::Encapsulator: EncodedSizeUser2,
-    M::Encapsulator: EncodedSizeUser2,
-    EncodedSize<M>: Add<EncodedSize<T>>,
-    Sum<EncodedSize<M>, EncodedSize<T>>: Sub<EncodedSize<M>, Output=EncodedSize<T>> + ArrayLength,
+    T::Encapsulator: GetRecipientPublicKeyBytes,
+    M::Encapsulator: GetRecipientPublicKeyBytes,
+    // EncodedSize<M>: Add<EncodedSize<T>>,
+    // Sum<EncodedSize<M>, EncodedSize<T>>: Sub<EncodedSize<M>, Output=EncodedSize<T>> + ArrayLength,
 {
-    type EncodedLen = <Self as EncodedSizeUser2>::EncodedSize;
+    type EncodedLen = U0; //<Self as EncodedSizeUser2>::EncodedSize;
 
-    fn get_recipient_public_key_bytes(&self) -> GenericArray<u8, Self::EncodedLen> {
-        todo!()
+    //fn get_recipient_public_key_bytes(&self) -> GenericArray<u8, Self::EncodedLen> {
+    fn get_recipient_public_key_bytes<'a>(&'a self) -> Cow<'a, [u8]> {
+        let mut pq_encap = self.encapsulator1.get_recipient_public_key_bytes().to_vec();
+        let trad_encap = self.encapsulator2.get_recipient_public_key_bytes();
+        
+        pq_encap.extend_from_slice(&trad_encap);
+        pq_encap.into()
     }
 }
 
@@ -351,36 +405,39 @@ where
 
 impl<M: Capsulator, T: Capsulator, COM: HybridCombiner> TryFrom<&[u8]> for HybridEncapsulator<M, T, COM>
 where 
-    M::Encapsulator: EncodedSizeUser2,
+    //M::Encapsulator: EncodedSizeUser2,
+    M::Encapsulator: KeySizeUser + KeyInit,
     T::Encapsulator: for<'a> TryFrom<&'a [u8]>,
 {
-    type Error = ();
+    type Error = TryFromSliceError;
     fn try_from(value: &[u8]) -> Result<Self, Self::Error> {
-        let (pq_public_key_bytes, trad_public_key_bytes) = value.split_at(<M::Encapsulator as EncodedSizeUser2>::EncodedSize::USIZE);
-        let encapsulator1 = M::Encapsulator::from_bytes(&GenericArray::from_slice(pq_public_key_bytes));
-        let encapsulator2 = T::Encapsulator::try_from(trad_public_key_bytes).map_err(|_|())?;
+        let (pq_public_key_bytes, trad_public_key_bytes) = value.split_at(<M::Encapsulator as KeySizeUser>::KeySize::USIZE);
+        let encapsulator1 = M::Encapsulator::new(&Array::try_from(pq_public_key_bytes)?);
+        let Ok(encapsulator2) = T::Encapsulator::try_from(trad_public_key_bytes) else { panic! ( "Error")};
         Ok(Self{encapsulator1, encapsulator2, phantom: PhantomData})
     }
 }
-impl<M: Capsulator, T: Capsulator, COM: HybridCombiner> HybridEncapsulator<M, T, COM>
-where 
-    M::Encapsulator: EncodedSizeUser2,
-    T::Encapsulator: for<'a> TryFrom<&'a [u8]>,
-{
-    pub fn from_slice(value: &[u8]) -> Result<Self, ()>
-    {
-        Self::try_from(value)
-    }
-}
+// impl<M: Capsulator, T: Capsulator, COM: HybridCombiner> HybridEncapsulator<M, T, COM>
+// where 
+//     //M::Encapsulator: EncodedSizeUser2,
+
+//     M::Encapsulator: KeySizeUser + KeyInit,
+//     T::Encapsulator: for<'a> TryFrom<&'a [u8]>,
+// {
+//     pub fn from_slice(value: &[u8]) -> Result<Self, ()>
+//     {
+//         Self::try_from(value)
+//     }
+// }
 
 
 impl<M: Capsulator, C: Capsulator, COM: HybridCombiner> Encapsulate<GenericArray<u8, Sum<M::CiphertextSize, C::CiphertextSize>>, Array<u8, U32>> for HybridEncapsulator<M, C, COM>
 where 
-    C::Encapsulator: Encapsulate<GenericArray<u8, C::CiphertextSize>, Array<u8,C::SharedKeySize>> + EncodedSizeUser2,
+    C::Encapsulator: Encapsulate<GenericArray<u8, C::CiphertextSize>, Array<u8,C::SharedKeySize>> + GetRecipientPublicKeyBytes, // + EncodedSizeUser2,
     COM: Default,
     C::SharedKeySize: ArraySize,
     C::CiphertextSize: ArrayLength, //<u8>,
-    M::Encapsulator: EncodedSizeUser2,
+    M::Encapsulator: GetRecipientPublicKeyBytes, //EncodedSizeUser2,
     M::CiphertextSize: Add<C::CiphertextSize>,
     Sum<M::CiphertextSize, C::CiphertextSize>: ArrayLength, //<u8>,
 {
@@ -390,7 +447,7 @@ where
         let (ct1, ss1) = self.encapsulator1.encapsulate(rng).unwrap();
         let (ct2, ss2) = self.encapsulator2.encapsulate(rng).unwrap();
 
-        let ss = COM::default().combine(ss1.as_slice(), ct1.as_slice(), &self.encapsulator1.as_bytes(), &ss2, &ct2, &self.encapsulator2.as_bytes());
+        let ss = COM::default().combine(ss1.as_slice(), ct1.as_slice(), &self.encapsulator1.get_recipient_public_key_bytes(), &ss2, &ct2, &self.encapsulator2.get_recipient_public_key_bytes());
         let ct = ct1.concat(ct2);
         
         Ok((ct,ss))
@@ -406,13 +463,13 @@ type SeedSize<X> = <<X as Capsulator>::Encapsulator as EncapsulateDeterministic2
 impl<M: Capsulator, C: Capsulator, COM: HybridCombiner> EncapsulateDeterministic2<GenericArray<u8, Sum<M::CiphertextSize, C::CiphertextSize>>, Array<u8, U32>> for HybridEncapsulator<M, C, COM>
 where 
     COM: Default,
-    C::Encapsulator: EncapsulateDeterministic2<Ciphertext<C>, SharedKey<C>> + EncodedSizeUser2,
+    C::Encapsulator: EncapsulateDeterministic2<Ciphertext<C>, SharedKey<C>> + GetRecipientPublicKeyBytes, // + EncodedSizeUser2,
     M::CiphertextSize: Add<C::CiphertextSize>,
     C::SharedKeySize: ArraySize,
     C::CiphertextSize: ArrayLength, //<u8>,
     Sum<M::CiphertextSize, C::CiphertextSize>: ArrayLength, //<u8>,
     
-    M::Encapsulator: EncapsulateDeterministic2<Ciphertext<M>, SharedKey<M>> + EncodedSizeUser2,
+    M::Encapsulator: EncapsulateDeterministic2<Ciphertext<M>, SharedKey<M>> + GetRecipientPublicKeyBytes, // + EncodedSizeUser2,
     SeedSize<M>: Add<SeedSize<C>>,
     Sum<SeedSize<M>, SeedSize<C>>: ArraySize + Sub<SeedSize<M>, Output = SeedSize<C>>,
 
@@ -429,7 +486,7 @@ where
         let Ok((ct1, ss1)) = self.encapsulator1.encapsulate_deterministic(seed1) else { return Err(())};
         let Ok((ct2, ss2)) = self.encapsulator2.encapsulate_deterministic(seed2) else { return Err(())};
 
-        let ss = COM::default().combine(ss1.as_slice(), ct1.as_slice(), &self.encapsulator1.as_bytes(), &ss2, &ct2, &self.encapsulator2.as_bytes());
+        let ss = COM::default().combine(ss1.as_slice(), ct1.as_slice(), &self.encapsulator1.get_recipient_public_key_bytes(), &ss2, &ct2, &self.encapsulator2.get_recipient_public_key_bytes());
         let ct = ct1.concat(ct2);
         
         Ok((ct,ss))
@@ -443,8 +500,8 @@ where
 #[derive(Debug)]
 pub struct HybridDecapsulator<M: Capsulator, C: Capsulator, COM: HybridCombiner, G> 
 {
-    decapsulator1: M::Decapsulator,
-    decapsulator2: C::Decapsulator,
+    pub decapsulator1: M::Decapsulator,
+    pub decapsulator2: C::Decapsulator,
     seed: Option<Array<u8, U32>>,
 
     phantom: PhantomData<COM>,
@@ -452,7 +509,7 @@ pub struct HybridDecapsulator<M: Capsulator, C: Capsulator, COM: HybridCombiner,
     
 }
 
-impl<M: Capsulator, C: Capsulator, COM: HybridCombiner,  G> HybridDecapsulator<M, C, COM, G>
+impl<M: Capsulator, C: Capsulator, COM: HybridCombiner, G> HybridDecapsulator<M, C, COM, G>
 {
     pub fn from_decapsulators(decapsulator1: M::Decapsulator, decapsulator2: C::Decapsulator) -> Self 
     {   
@@ -461,30 +518,31 @@ impl<M: Capsulator, C: Capsulator, COM: HybridCombiner,  G> HybridDecapsulator<M
     
 }
 
-type EncodedSize2<X> = <<X as Capsulator>::Decapsulator as EncodedSizeUser2>::EncodedSize;
 
-impl<M: Capsulator, C: Capsulator, COM: HybridCombiner, G> EncodedSizeUser2 for HybridDecapsulator<M, C, COM, G>
-where 
-    C::Decapsulator: EncodedSizeUser2,
-    M::Decapsulator: EncodedSizeUser2,
-    EncodedSize2<M>: Add<EncodedSize2<C>>,
-    Sum<EncodedSize2<M>, EncodedSize2<C>>: Sub<EncodedSize2<M>, Output=EncodedSize2<C>> + ArrayLength,
-{
-    type EncodedSize = Sum<EncodedSize2<M>, EncodedSize2<C>>;
+//type EncodedSize2<X> = <<X as Capsulator>::Decapsulator as EncodedSizeUser2>::EncodedSize;
+
+// impl<M: Capsulator, C: Capsulator, COM: HybridCombiner, G> EncodedSizeUser2 for HybridDecapsulator<M, C, COM, G>
+// where 
+//     C::Decapsulator: EncodedSizeUser2,
+//     M::Decapsulator: EncodedSizeUser2,
+//     EncodedSize2<M>: Add<EncodedSize2<C>>,
+//     Sum<EncodedSize2<M>, EncodedSize2<C>>: Sub<EncodedSize2<M>, Output=EncodedSize2<C>> + ArrayLength,
+// {
+//     type EncodedSize = Sum<EncodedSize2<M>, EncodedSize2<C>>;
     
-    fn from_bytes(enc: &crate::Encoded<Self>) -> Self {
-        let (key_1_bytes, key_2_bytes) = enc.split();
+//     fn from_bytes(enc: &crate::Encoded<Self>) -> Self {
+//         let (key_1_bytes, key_2_bytes) = enc.split();
 
-        let decapsulator1 = M::Decapsulator::from_bytes(key_1_bytes);
-        let decapsulator2 = C::Decapsulator::from_bytes(key_2_bytes);
-        Self { decapsulator1, decapsulator2, phantom: PhantomData, seed: None, phantom2: PhantomData}
-    }
-    fn as_bytes(&self) -> crate::Encoded<Self> {
-        let sk1_ha = self.decapsulator1.as_bytes();
-        let sk2_ha = self.decapsulator2.as_bytes();
-        sk1_ha.concat(sk2_ha)
-    }
-}
+//         let decapsulator1 = M::Decapsulator::from_bytes(key_1_bytes);
+//         let decapsulator2 = C::Decapsulator::from_bytes(key_2_bytes);
+//         Self { decapsulator1, decapsulator2, phantom: PhantomData, seed: None, phantom2: PhantomData}
+//     }
+//     fn as_bytes(&self) -> crate::Encoded<Self> {
+//         let sk1_ha = self.decapsulator1.as_bytes();
+//         let sk2_ha = self.decapsulator2.as_bytes();
+//         sk1_ha.concat(sk2_ha)
+//     }
+// }
 
 
 
@@ -512,50 +570,183 @@ where
 
 impl<M, C, COM, G> TryFrom<&[u8]> for HybridDecapsulator<M, C, COM, G>
 where 
-    M: Capsulator, // + GenerateCapsulatorFromSeed,
-    C: Capsulator, // + GenerateCapsulatorFromSeed,
+    M: Capsulator,
+    C: Capsulator,
     // M::Encapsulator: EncodedSizeUser2,
     // C::Encapsulator: EncodedSizeUser2,
-    M::Decapsulator: EncodedSizeUser2 + GetEncapsulator,
+    M::Decapsulator:  GetEncapsulator + KeySizeUser + KeyInit, // + EncodedSizeUser2,
     C::Decapsulator: for<'a> TryFrom<&'a [u8]> + GetEncapsulator,
     // M::CiphertextSize: Add<C::CiphertextSize>,
     // M::SeedSize: Add<C::SeedSize>,
     // <M::Decapsulator as GetEncapsulator>::Encapsulator: EncodedSizeUser2,
     // <C::Decapsulator as GetEncapsulator>::Encapsulator: EncodedSizeUser2,
     COM: HybridCombiner + Default,
+
+    // <M as Capsulator>::CiphertextSize: Add<<C as Capsulator>::CiphertextSize>,
     // Sum<M::CiphertextSize, C::CiphertextSize>: ArrayLength, //<u8>,
     // Sum<M::SeedSize, C::SeedSize>: ArraySize + Sub<M::SeedSize, Output = C::SeedSize>,
-    // Sum<M::CiphertextSize, C::CiphertextSize>: Sub<M::CiphertextSize, Output=C::CiphertextSize> + ArrayLength, //<u8>,
+    // <M as DerivePairFromSeed>::SeedSize: Add<<C as DerivePairFromSeed>::SeedSize>,
+    // M: Capsulator<Encapsulator=<M as DerivePairFromSeed>::Public, Decapsulator=<M as DerivePairFromSeed>::Private>,
+    // C: Capsulator + DerivePairFromSeed, 
+    // C: Capsulator<Encapsulator=<C as DerivePairFromSeed>::Public, Decapsulator=<C as DerivePairFromSeed>::Private>,
 {
-    type Error = ();
+    type Error = TryFromSliceError;
     fn try_from(value: &[u8]) -> Result<Self, Self::Error> {
 
         if let Ok(_seed) = Array::<u8, U32>::try_from(value)
         {
             todo!()
-            // let (_encapsulator,decapsulator) = HybridKem::<M, C, COM, ExpandSeed<U32, sha3::Shake256>>::derive_from_seed(&seed);
-            // Ok(Self { decapsulator1: decapsulator.decapsulator1, decapsulator2: decapsulator.decapsulator2, seed: Some(seed), phantom: PhantomData, phantom2: PhantomData})
+
+            // let (_encapsulator,decapsulator) = HybridKem::<M, C, COM, ExpandSeed<U32, Shake256>>::derive_from_seed(&_seed).unwrap();
+            // Ok(Self { decapsulator1: decapsulator.decapsulator1, decapsulator2: decapsulator.decapsulator2, seed: Some(_seed), phantom: PhantomData, phantom2: PhantomData})
+            //todo!()
         }
-        else if value.len() > <M::Decapsulator as EncodedSizeUser2>::EncodedSize::USIZE
+        else if value.len() > <M::Decapsulator as KeySizeUser>::KeySize::USIZE
         {
-            let (key_1_bytes, key_2_bytes) = value.split_at(<M::Decapsulator as EncodedSizeUser2>::EncodedSize::USIZE);
-            let decapsulator1 = M::Decapsulator::from_bytes(GenericArray::from_slice(key_1_bytes));
-            let decapsulator2 = C::Decapsulator::try_from(key_2_bytes).map_err(|_|())?;
+            //println! ( "input_len={}, expected_len={}", value.len(), G::SeedSize::USIZE);
+            let (key_1_bytes, key_2_bytes) = value.split_at(<M::Decapsulator as KeySizeUser>::KeySize::USIZE);
+            let decapsulator1 = M::Decapsulator::new(key_1_bytes.try_into()?);
+            let Ok(decapsulator2) = C::Decapsulator::try_from(key_2_bytes) else { panic! ("Unhandled")};
             Ok(Self { decapsulator1, decapsulator2, phantom: PhantomData, seed: None, phantom2: PhantomData})
         }
         else {
-            Err(())
+            //Err(())
+            panic!("HHHH")
         }
     }
 }
 
-impl<M, C, COM, G> HybridDecapsulator<M, C, COM, G>
+impl<M, C, COM, G> KeyInit for HybridDecapsulator<M, C, COM, G>
+where 
+    M: Capsulator + GenerateDeterministic3,
+    C: Capsulator + GenerateDeterministic3,
+    // M::Encapsulator: EncodedSizeUser2,
+    // C::Encapsulator: EncodedSizeUser2,
+    M::Decapsulator:  GetEncapsulator + KeySizeUser + KeyInit, // + EncodedSizeUser2,
+    C::Decapsulator: for<'a> TryFrom<&'a [u8]> + GetEncapsulator,
+    // M::CiphertextSize: Add<C::CiphertextSize>,
+    // M::SeedSize: Add<C::SeedSize>,
+    // <M::Decapsulator as GetEncapsulator>::Encapsulator: EncodedSizeUser2,
+    // <C::Decapsulator as GetEncapsulator>::Encapsulator: EncodedSizeUser2,
+    COM: HybridCombiner + Default,
+
+    <M as Capsulator>::CiphertextSize: Add<<C as Capsulator>::CiphertextSize>,
+    Sum<M::CiphertextSize, C::CiphertextSize>: ArrayLength, //<u8>,
+    Sum<M::SeedSize, C::SeedSize>: ArraySize + Sub<M::SeedSize, Output = C::SeedSize>,
+    <M as GenerateDeterministic3>::SeedSize: Add<<C as GenerateDeterministic3>::SeedSize>,
+    M: Capsulator<Encapsulator=<M as GenerateDeterministic3>::Public, Decapsulator=<M as GenerateDeterministic3>::Private>,
+    C: Capsulator + GenerateDeterministic3, 
+    C: Capsulator<Encapsulator=<C as GenerateDeterministic3>::Public, Decapsulator=<C as GenerateDeterministic3>::Private>,
+{
+    fn new(key: &cipher::Key<Self>) -> Self {
+        let (_encapsulator,decapsulator) = HybridKem::<M, C, COM, ExpandSeed<U32, Shake256>>::generate_deterministic(&key).unwrap();
+        Self { decapsulator1: decapsulator.decapsulator1, decapsulator2: decapsulator.decapsulator2, seed: Some(*key), phantom: PhantomData, phantom2: PhantomData}
+        //todo!()
+    }
+    //type KeySize = Sum<U64, <C::Decapsulator as KeySizeUser>::KeySize>;
+}
+
+
+
+
+impl<M, C, COM, G> KeySizeUser for HybridDecapsulator<M, C, COM, G>
 where 
     M: Capsulator, // + GenerateCapsulatorFromSeed,
     C: Capsulator, // + GenerateCapsulatorFromSeed,
-    M::Encapsulator: EncodedSizeUser2,
-    C::Encapsulator: EncodedSizeUser2,
-    M::Decapsulator: EncodedSizeUser2 + GetEncapsulator,
+    // M::Decapsulator: KeySizeUser, // + EncodedSizeUser2,
+    // C::Decapsulator: KeySizeUser,
+    // <<M as Capsulator>::Decapsulator as KeySizeUser>::KeySize: Add<<<C as Capsulator>::Decapsulator as KeySizeUser>::KeySize>,
+    // <<<M as Capsulator>::Decapsulator as KeySizeUser>::KeySize as Add<<<C as Capsulator>::Decapsulator as KeySizeUser>::KeySize>>::Output: ArraySize,
+    // U64: Add<<<C as Capsulator>::Decapsulator as KeySizeUser>::KeySize>,
+    // <U64 as Add<<<C as Capsulator>::Decapsulator as KeySizeUser>::KeySize>>::Output: ArraySize,
+    COM: HybridCombiner + Default,
+
+    
+{
+    //type KeySize = Sum<<M::Decapsulator as KeySizeUser>::KeySize, <C::Decapsulator as KeySizeUser>::KeySize>;
+    type KeySize = U32;
+    //type KeySize = Sum<U64, <C::Decapsulator as KeySizeUser>::KeySize>;
+}
+
+
+
+// impl<M, C, COM, G> KeyInit for HybridDecapsulator<M, C, COM, G>
+// where 
+//     M: Capsulator, // + GenerateCapsulatorFromSeed,
+//     C: Capsulator, // + GenerateCapsulatorFromSeed,
+//     M::Decapsulator: KeySizeUser, // + EncodedSizeUser2,
+//     C::Decapsulator: KeySizeUser,
+//     <<M as Capsulator>::Decapsulator as KeySizeUser>::KeySize: Add<<<C as Capsulator>::Decapsulator as KeySizeUser>::KeySize>,
+//     <<<M as Capsulator>::Decapsulator as KeySizeUser>::KeySize as Add<<<C as Capsulator>::Decapsulator as KeySizeUser>::KeySize>>::Output: ArraySize,
+//     // U64: Add<<<C as Capsulator>::Decapsulator as KeySizeUser>::KeySize>,
+//     // <U64 as Add<<<C as Capsulator>::Decapsulator as KeySizeUser>::KeySize>>::Output: ArraySize,
+//     COM: HybridCombiner + Default,
+
+//     M: Capsulator + DerivePairFromSeed,
+//     //M: Capsulator<Encapsulator=<M as DerivePairFromSeed>::Public, Decapsulator=<M as DerivePairFromSeed>::Private>,
+        
+//     C: Capsulator + DerivePairFromSeed, 
+//     //     C: Capsulator<Encapsulator=<C as DerivePairFromSeed>::Public, Decapsulator=<C as DerivePairFromSeed>::Private>,
+        
+//     //     //M::Encapsulator: EncodedSizeUser2,
+//     //     //C::Encapsulator: EncodedSizeUser2,
+//     M::Decapsulator: GetEncapsulator,
+//     C::Decapsulator: GetEncapsulator,
+//     M::CiphertextSize: Add<C::CiphertextSize>,
+//     M::SeedSize: Add<C::SeedSize>,
+//     //<M::CiphertextSize as Add<C::CiphertextSize>>::Output: ArrayLength<u8>,
+        
+//     //     //<M::Decapsulator as GetEncapsulator>::Encapsulator: EncodedSizeUser2,
+//     //     //<C::Decapsulator as GetEncapsulator>::Encapsulator: EncodedSizeUser2,
+//     COM: Default + HybridCombiner,
+        
+//     Sum<M::CiphertextSize, C::CiphertextSize>: ArrayLength, //<u8>,
+//     Sum<M::SeedSize, C::SeedSize>: ArraySize + Sub<M::SeedSize, Output = C::SeedSize>,
+//     Sum<M::CiphertextSize, C::CiphertextSize>: Sub<M::CiphertextSize, Output=C::CiphertextSize> + ArrayLength, //<u8>,
+
+//     <C as DerivePairFromSeed>::Private: GetEncapsulator,
+//     <M as DerivePairFromSeed>::Private: GetEncapsulator,
+
+
+// {
+//     //type KeySize = Sum<<M::Decapsulator as KeySizeUser>::KeySize, <C::Decapsulator as KeySizeUser>::KeySize>;
+    
+//     fn new(key: &cipher::Key<Self>) -> Self {
+//         let (_encapsulator,decapsulator) = HybridKem::<M, C, COM, ExpandSeed<U32, Shake256>>::derive_from_seed(&key);
+//         Ok(Self { decapsulator1: decapsulator.decapsulator1, decapsulator2: decapsulator.decapsulator2, seed: Some(seed), phantom: PhantomData, phantom2: PhantomData})
+//     }
+//     //type KeySize = Sum<U64, <C::Decapsulator as KeySizeUser>::KeySize>;
+// }
+
+
+impl<M, C, COM, G> KeyExport for HybridDecapsulator<M, C, COM, G>
+where 
+    M: Capsulator, // + GenerateCapsulatorFromSeed,
+    C: Capsulator, // + GenerateCapsulatorFromSeed,
+    M::Decapsulator: KeyExport, // + EncodedSizeUser2,
+    C::Decapsulator: KeySizeUser + KeyExport,
+    COM: HybridCombiner + Default,
+    <<M as Capsulator>::Decapsulator as KeySizeUser>::KeySize: Add<<<C as Capsulator>::Decapsulator as KeySizeUser>::KeySize>,
+    <<<M as Capsulator>::Decapsulator as KeySizeUser>::KeySize as Add<<<C as Capsulator>::Decapsulator as KeySizeUser>::KeySize>>::Output: ArraySize,
+    // U64: Add<<<C as Capsulator>::Decapsulator as KeySizeUser>::KeySize>,
+    // <U64 as Add<<<C as Capsulator>::Decapsulator as KeySizeUser>::KeySize>>::Output: ArraySize,
+{
+    fn to_bytes(&self) -> cipher::Key<Self> {
+        //self.decapsulator1.to_bytes().concat(self.decapsulator2.to_bytes())
+        self.seed.unwrap()
+    }
+}
+
+
+
+
+impl<M, C, COM, G> HybridDecapsulator<M, C, COM, G>
+where 
+    M: Capsulator, // + DerivePairFromSeed, // + GenerateCapsulatorFromSeed,
+    C: Capsulator, // + DerivePairFromSeed, // + GenerateCapsulatorFromSeed,
+    //M::Encapsulator: EncodedSizeUser2,
+    //C::Encapsulator: EncodedSizeUser2,
+    M::Decapsulator: KeyInit + GetEncapsulator, // EncodedSizeUser2
     C::Decapsulator: for<'a> TryFrom<&'a [u8]> + GetEncapsulator,
     // M::CiphertextSize: Add<C::CiphertextSize>,
     // M::SeedSize: Add<C::SeedSize>,
@@ -565,67 +756,79 @@ where
     // Sum<M::CiphertextSize, C::CiphertextSize>: ArrayLength, //<u8>,
     // Sum<M::SeedSize, C::SeedSize>: ArraySize + Sub<M::SeedSize, Output = C::SeedSize>,
     // Sum<M::CiphertextSize, C::CiphertextSize>: Sub<M::CiphertextSize, Output=C::CiphertextSize> + ArrayLength, //<u8>,
+
+    // M: Capsulator<Encapsulator=<M as DerivePairFromSeed>::Public, Decapsulator=<M as DerivePairFromSeed>::Private>,
+    // C: Capsulator + DerivePairFromSeed, 
+    // C: Capsulator<Encapsulator=<C as DerivePairFromSeed>::Public, Decapsulator=<C as DerivePairFromSeed>::Private>,
+    // <M as Capsulator>::CiphertextSize: Add<<C as Capsulator>::CiphertextSize>,
+    // Sum<M::CiphertextSize, C::CiphertextSize>: ArrayLength, //<u8>,
+    // Sum<M::SeedSize, C::SeedSize>: ArraySize + Sub<M::SeedSize, Output = C::SeedSize>,
+    // <M as DerivePairFromSeed>::SeedSize: Add<<C as DerivePairFromSeed>::SeedSize>,
 {
-    pub fn from_slice(slice: &[u8]) -> Result<Self, ()>
+    pub fn from_slice(slice: &[u8]) -> Result<Self, TryFromSliceError>
     {
         TryFrom::<&[u8]>::try_from(slice)
     }
 }
 
-impl<M: Capsulator, C: Capsulator, COM: HybridCombiner, K, KI> EncodeSeed for HybridDecapsulator<M,C,COM, DeriveExpandSeed<U32, K, KI>>
-where K: Kdf + Default,
-    KI: Kdf + Default,
-    M: GenerateCapsulatorFromSeed,
-    C: GenerateCapsulatorFromSeed,
-    M::SeedSize: Add<C::SeedSize>,
-    //<M::SeedSize as Add<C::SeedSize>>::Output: ArraySize,
-    //<<M as GenerateCapsulatorFromSeed>::SeedSize as Add<<C as GenerateCapsulatorFromSeed>::SeedSize>>::Output: Sub<<M as GenerateCapsulatorFromSeed>::SeedSize>,
-    //<<<M as GenerateCapsulatorFromSeed>::SeedSize as Add<<C as GenerateCapsulatorFromSeed>::SeedSize>>::Output as Sub<<M as GenerateCapsulatorFromSeed>::SeedSize>>::Output: ArraySize,
+// impl<M: Capsulator, C: Capsulator, COM: HybridCombiner, K, KI> EncodeSeed for HybridDecapsulator<M,C,COM, DeriveExpandSeed<U32, K, KI>>
+// where K: Kdf + Default,
+//     KI: Kdf + Default,
+//     M: DerivePairFromSeed,
+//     M: Capsulator<Encapsulator=<M as DerivePairFromSeed>::Public, Decapsulator=<M as DerivePairFromSeed>::Private>,
+//     C: Capsulator<Encapsulator=<C as DerivePairFromSeed>::Public, Decapsulator=<C as DerivePairFromSeed>::Private>,
+//     C: DerivePairFromSeed,
+//     M::SeedSize: Add<C::SeedSize>,
+//     //<M::SeedSize as Add<C::SeedSize>>::Output: ArraySize,
+//     //<<M as GenerateCapsulatorFromSeed>::SeedSize as Add<<C as GenerateCapsulatorFromSeed>::SeedSize>>::Output: Sub<<M as GenerateCapsulatorFromSeed>::SeedSize>,
+//     //<<<M as GenerateCapsulatorFromSeed>::SeedSize as Add<<C as GenerateCapsulatorFromSeed>::SeedSize>>::Output as Sub<<M as GenerateCapsulatorFromSeed>::SeedSize>>::Output: ArraySize,
 
-    Sum<M::SeedSize, C::SeedSize>: ArraySize + Sub<M::SeedSize, Output = C::SeedSize>,
-{ 
-    type EncodedSize = U32;
-    fn as_seed_bytes(&self) -> Option<Array::<u8, Self::EncodedSize>> {
-        self.seed
-    }
-    fn from_seed_bytes(enc: &Array::<u8, Self::EncodedSize>) -> Self {
+//     Sum<M::SeedSize, C::SeedSize>: ArraySize + Sub<M::SeedSize, Output = C::SeedSize>,
+// { 
+//     type EncodedSize = U32;
+//     fn as_seed_bytes(&self) -> Option<Array::<u8, Self::EncodedSize>> {
+//         self.seed
+//     }
+//     fn from_seed_bytes(enc: &Array::<u8, Self::EncodedSize>) -> Self {
     
-        //let derived_seed = KI::derive_secret_others(enc, None);
-        let expanded = K::derive_secret_other::<Sum<M::SeedSize, C::SeedSize>>(enc, &[]).unwrap();
+//         //let derived_seed = KI::derive_secret_others(enc, None);
+//         let expanded = K::derive_secret_other::<Sum<M::SeedSize, C::SeedSize>>(enc, &[]).unwrap();
         
-        let (seed1, seed2) = expanded.split(); //Array::split::<M::SeedSize>(expanded);
+//         let (seed1, seed2) = expanded.split(); //Array::split::<M::SeedSize>(expanded);
         
-        let (_, decapsulator1) = M::derive_from_seed(&seed1);
-        let (_, decapsulator2) = C::derive_from_seed(&seed2);
+//         let Ok((_, decapsulator1)) = M::derive_from_seed(&seed1) else { panic! ( "Unhandled")};
+//         let Ok((_, decapsulator2)) = C::derive_from_seed(&seed2) else { panic! ( "Unhandled")};
 
-        HybridDecapsulator{decapsulator1, decapsulator2, seed: Some(enc.clone()), phantom: PhantomData, phantom2: PhantomData}
-    }
-}
+//         HybridDecapsulator{decapsulator1, decapsulator2, seed: Some(enc.clone()), phantom: PhantomData, phantom2: PhantomData}
+//     }
+// }
 
-impl<M: Capsulator, C: Capsulator, COM: HybridCombiner, K> EncodeSeed for HybridDecapsulator<M,C,COM, ExpandSeed<U32, K>>
-where K: Kdf + Default,
-    M: GenerateCapsulatorFromSeed,
-    C: GenerateCapsulatorFromSeed,
-    M::SeedSize: Add<C::SeedSize>,
-    //<M::SeedSize as Add<C::SeedSize>>::Output: ArraySize,
-    //Sum<M::SeedSize, C::SeedSize>: ArraySize,
-    Sum<M::SeedSize, C::SeedSize>: Sub<M::SeedSize, Output = C::SeedSize> + ArraySize,
-{ 
-    type EncodedSize = U32;
-    fn as_seed_bytes(&self) -> Option<Array::<u8, Self::EncodedSize>> {
-        self.seed
-    }
-    fn from_seed_bytes(enc: &Array::<u8, Self::EncodedSize>) -> Self {
-        let expanded = K::derive_secret_other::<Sum<M::SeedSize, C::SeedSize>>(&enc, &[]).unwrap();
-        //let (seed1, seed2) = expanded.split_at(M::SeedSize::USIZE);
-        let (seed1, seed2) = expanded.split(); //Array::split::<M::SeedSize>(expanded);
+// impl<M: Capsulator, C: Capsulator, COM: HybridCombiner, K> EncodeSeed for HybridDecapsulator<M,C,COM, ExpandSeed<U32, K>>
+// where K: Kdf + Default,
+//     M: DerivePairFromSeed,
+//     C: DerivePairFromSeed,
+//     M::SeedSize: Add<C::SeedSize>,
+//     C: Capsulator<Encapsulator=<C as DerivePairFromSeed>::Public, Decapsulator=<C as DerivePairFromSeed>::Private>,
+//     M: Capsulator<Encapsulator=<M as DerivePairFromSeed>::Public, Decapsulator=<M as DerivePairFromSeed>::Private>,
+//     //<M::SeedSize as Add<C::SeedSize>>::Output: ArraySize,
+//     //Sum<M::SeedSize, C::SeedSize>: ArraySize,
+//     Sum<M::SeedSize, C::SeedSize>: Sub<M::SeedSize, Output = C::SeedSize> + ArraySize,
+// { 
+//     type EncodedSize = U32;
+//     fn as_seed_bytes(&self) -> Option<Array::<u8, Self::EncodedSize>> {
+//         self.seed
+//     }
+//     fn from_seed_bytes(enc: &Array::<u8, Self::EncodedSize>) -> Self {
+//         let expanded = K::derive_secret_other::<Sum<M::SeedSize, C::SeedSize>>(&enc, &[]).unwrap();
+//         //let (seed1, seed2) = expanded.split_at(M::SeedSize::USIZE);
+//         let (seed1, seed2) = expanded.split(); //Array::split::<M::SeedSize>(expanded);
         
-        let (_, decapsulator1) = M::derive_from_seed(&seed1);
-        let (_, decapsulator2) = C::derive_from_seed(&seed2);
+//         let Ok((_, decapsulator1)) = M::derive_from_seed(&seed1) else { panic! ("unhandled")};
+//         let Ok((_, decapsulator2)) = C::derive_from_seed(&seed2) else { panic! ("unhandled")};
 
-        HybridDecapsulator{decapsulator1, decapsulator2, seed: Some(enc.clone()), phantom: PhantomData, phantom2: PhantomData}
-    }
-}
+//         HybridDecapsulator{decapsulator1, decapsulator2, seed: Some(enc.clone()), phantom: PhantomData, phantom2: PhantomData}
+//     }
+// }
 
 
 
@@ -636,8 +839,9 @@ where COM: Default,
 
     C::Decapsulator: GetEncapsulator,
     M::Decapsulator: GetEncapsulator,
-    <C::Decapsulator as GetEncapsulator>::Encapsulator: EncodedSizeUser2,
-    <M::Decapsulator as GetEncapsulator>::Encapsulator: EncodedSizeUser2,
+    //<C::Decapsulator as GetEncapsulator>::Encapsulator: EncodedSizeUser2,
+    <C::Decapsulator as GetEncapsulator>::Encapsulator: GetRecipientPublicKeyBytes,
+    <M::Decapsulator as GetEncapsulator>::Encapsulator: GetRecipientPublicKeyBytes, //EncodedSizeUser2,
 
     Sum<M::CiphertextSize, C::CiphertextSize>: Sub<M::CiphertextSize, Output=C::CiphertextSize> + ArrayLength, //<u8>,
 {
@@ -654,10 +858,10 @@ where COM: Default,
         //let ss2 = self.decapsulator2.decapsulate(ct2.try_into().map_err(|_|())?).map_err(|_|())?;
         let ss2 = self.decapsulator2.decapsulate(ct2).map_err(|_|())?;
 
-        let pub1 = self.decapsulator1.get_encapsulator().as_bytes();
-        let pub2 = self.decapsulator2.get_encapsulator().as_bytes();
+        let pub1 = self.decapsulator1.encapsulation_key();
+        let pub2 = self.decapsulator2.encapsulation_key();
 
-        let ss = COM::default().combine(ss1, ct1, pub1, ss2, ct2, pub2);
+        let ss = COM::default().combine(ss1, ct1, pub1.get_recipient_public_key_bytes(), ss2, ct2, pub2.get_recipient_public_key_bytes());
         Ok(ss)
     }
 }
@@ -669,8 +873,8 @@ where COM: Default,
     C::Decapsulator: GetEncapsulator<Encapsulator=C::Encapsulator>, 
 {
     type Encapsulator = HybridEncapsulator<M, C, COM>;
-    fn get_encapsulator(&self) -> Self::Encapsulator {
-        Self::Encapsulator { encapsulator1: self.decapsulator1.get_encapsulator(), encapsulator2: self.decapsulator2.get_encapsulator(), phantom: PhantomData }
+    fn encapsulation_key(&self) -> Self::Encapsulator {
+        Self::Encapsulator { encapsulator1: self.decapsulator1.encapsulation_key(), encapsulator2: self.decapsulator2.encapsulation_key(), phantom: PhantomData }
     }
 }
 
@@ -678,7 +882,8 @@ impl<M: Capsulator, C: Capsulator, COM: HybridCombiner, G> GetRecipientPublicKey
 where COM: Default,
     M::Decapsulator: GetEncapsulator<Encapsulator=M::Encapsulator>,
     C::Decapsulator: GetEncapsulator<Encapsulator=C::Encapsulator>, 
-    M::Encapsulator: EncodedSizeUser2,
+    M::Encapsulator: GetRecipientPublicKeyBytes, //EncodedSizeUser2,
+    C::Encapsulator: GetRecipientPublicKeyBytes,
     // C::Encapsulator: EncodedSizeUser2,
     // <M::Encapsulator as EncodedSizeUser2>::EncodedSize: Add<<C::Encapsulator as EncodedSizeUser2>::EncodedSize>,
     // <<M::Encapsulator as EncodedSizeUser2>::EncodedSize as Add<<C::Encapsulator as EncodedSizeUser2>::EncodedSize>>::Output: Sub<<M::Encapsulator as EncodedSizeUser2>::EncodedSize>,
@@ -687,8 +892,12 @@ where COM: Default,
 {
     type EncodedLen = U0; //<<Self as GetEncapsulator>::Encapsulator as EncodedSizeUser2>::EncodedSize;
 
-    fn get_recipient_public_key_bytes(&self) -> GenericArray<u8, Self::EncodedLen> {
-        todo!()
+    //fn get_recipient_public_key_bytes(&self) -> GenericArray<u8, Self::EncodedLen> {
+    fn get_recipient_public_key_bytes<'a>(&'a self) -> Cow<'a, [u8]> {
+        let mut p1 = self.decapsulator1.encapsulation_key().get_recipient_public_key_bytes().to_vec();
+        let p2 = self.decapsulator2.encapsulation_key();
+        p1.extend_from_slice(&p2.get_recipient_public_key_bytes());
+        p1.into()
     }
 }
 
@@ -1476,5 +1685,129 @@ where COM: Default,
 // {
 //     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
 //         f.pad("Hello World")
+//     }
+// }
+
+
+
+// impl<M: Capsulator, C: Capsulator, COM: HybridCombiner,  G> ml_kem::Kem for HybridKem<M, C, COM, G>
+// where 
+//     M: Sync + Send + 'static,
+//     M::Decapsulator: GetEncapsulator,
+//     M::Encapsulator: GetRecipientPublicKeyBytes, //EncodedSizeUser2,
+    
+//     M::CiphertextSize: Add<C::CiphertextSize>,
+//     <M::CiphertextSize as Add<C::CiphertextSize>>::Output: ArrayLength, //<u8>,
+//     <M::Decapsulator as GetEncapsulator>::Encapsulator: GetRecipientPublicKeyBytes, //EncodedSizeUser2,
+    
+//     //C::Encapsulator: EncodedSizeUser2,
+//     C: Sync + Send + 'static,
+//     C::Encapsulator: GetRecipientPublicKeyBytes,
+//     C::Decapsulator: GetEncapsulator,
+//     //<C::Decapsulator as GetEncapsulator>::Encapsulator: EncodedSizeUser2,
+//     <C::Decapsulator as GetEncapsulator>::Encapsulator: GetRecipientPublicKeyBytes,
+    
+
+//     Sum<M::CiphertextSize, C::CiphertextSize>: Sub<M::CiphertextSize, Output=C::CiphertextSize> + ArraySize, //<u8>,
+    
+//     COM: Default + Sync + Send + 'static,
+//     G: Sync + Send + 'static,
+// {
+//     type EncapsulationKey = HybridEncapsulator<M, C, COM>;
+//     type DecapsulationKey = HybridDecapsulator<M, C, COM, G>;
+//     type CiphertextSize = Sum<M::CiphertextSize, C::CiphertextSize>;
+//     type SharedKeySize = U32;
+// }
+
+// impl<M: Capsulator, C: Capsulator, COM: HybridCombiner,  G> Ord for HybridKem<M, C, COM, G>
+// {
+//     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+//         todo!()
+//     }
+// }
+// impl<M: Capsulator, C: Capsulator, COM: HybridCombiner,  G> Eq for HybridKem<M, C, COM, G>
+// {
+
+// }
+// impl<M: Capsulator, C: Capsulator, COM: HybridCombiner,  G> Debug for HybridKem<M, C, COM, G>
+// {
+//     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+//         f.debug_tuple("HybridKem").field(&self.0).field(&self.1).field(&self.2).field(&self.3).finish()
+//     }
+// }
+// impl<M: Capsulator, C: Capsulator, COM: HybridCombiner,  G> PartialEq for HybridKem<M, C, COM, G>
+// {
+//     fn eq(&self, other: &Self) -> bool {
+//         self.0 == other.0 && self.1 == other.1 && self.2 == other.2 && self.3 == other.3
+//     }
+// }
+// impl<M: Capsulator, C: Capsulator, COM: HybridCombiner,  G> PartialOrd for HybridKem<M, C, COM, G>
+// {
+//     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+//         match self.0.partial_cmp(&other.0) {
+//             Some(core::cmp::Ordering::Equal) => {}
+//             ord => return ord,
+//         }
+//         match self.1.partial_cmp(&other.1) {
+//             Some(core::cmp::Ordering::Equal) => {}
+//             ord => return ord,
+//         }
+//         match self.2.partial_cmp(&other.2) {
+//             Some(core::cmp::Ordering::Equal) => {}
+//             ord => return ord,
+//         }
+//         self.3.partial_cmp(&other.3)
+//     }
+// }
+// impl<M: Capsulator, C: Capsulator, COM: HybridCombiner,  G> Default for HybridKem<M, C, COM, G>
+// {
+//     fn default() -> Self {
+//         Self(Default::default(), Default::default(), Default::default(), Default::default())
+//     }
+// }
+// impl<M: Capsulator, C: Capsulator, COM: HybridCombiner,  G> Copy for HybridKem<M, C, COM, G>
+// {
+
+// }
+// impl<M: Capsulator, C: Capsulator, COM: HybridCombiner,  G> Clone for HybridKem<M, C, COM, G>
+// {
+//     fn clone(&self) -> Self {
+//         Self(self.0.clone(), self.1.clone(), self.2.clone(), self.3.clone())
+//     }
+// }
+
+// impl<M: Capsulator, T: Capsulator, COM: HybridCombiner> Eq for HybridEncapsulator<M, T, COM>
+// {
+
+// }
+// impl<M: Capsulator, T: Capsulator, COM: HybridCombiner> PartialEq for HybridEncapsulator<M, T, COM>
+// {
+//     fn eq(&self, other: &Self) -> bool {
+//         todo!()
+//     }
+// }
+// impl<M: Capsulator, T: Capsulator, COM: HybridCombiner> Clone for HybridEncapsulator<M, T, COM>
+// {
+//     fn clone(&self) -> Self {
+//         todo!(); //Self { encapsulator1: self.encapsulator1.clone(), encapsulator2: self.encapsulator2.clone(), phantom: self.phantom.clone() }
+//     }
+// }
+// impl<M: Capsulator, T: Capsulator, COM: HybridCombiner> ml_kem::Encapsulate for HybridEncapsulator<M, T, COM>
+// where M: Capsulator + Sync + Send + 'static,
+//       T: Capsulator + Sync + Send + 'static,
+// {
+//     type Kem = HybridKem<M, T, COM, ()>;
+
+//     fn encapsulate_with_rng<R>(&self, rng: &mut R) -> (ml_kem::Ciphertext<Self::Kem>, ml_kem::kem::SharedKey<Self::Kem>)
+//     where
+//         R: rand::CryptoRng + ?Sized {
+//         todo!()
+//     }
+// }
+
+// impl<M: Capsulator, T: Capsulator, COM: HybridCombiner> TryKeyInit for HybridEncapsulator<M, T, COM>
+// {
+//     fn new(key: &cipher::Key<Self>) -> Result<Self, ml_kem::InvalidKey> {
+//         todo!()
 //     }
 // }

@@ -1,10 +1,10 @@
-use generic_array::GenericArray;
+use cipher::common::KeyExport;
 use hex_literal::hex;
-use kems::{Capsulator, EncapsulateDeterministic2, EncodeSeed, EncodedSizeUser2, GenerateCapsulatorFromSeed };
-
+use kems::xwing::XwingMlKem768X25519;
+use kems::{Capsulator, EncapsulateDeterministic2, GenerateDeterministic3, GetRecipientPublicKeyBytes};
+use kems::draft_irtf_cfrg_concrete_hybrid_kems::{ConcreteMlKem768P256, ConcreteMlKem1024P384 };
 
 // https://datatracker.ietf.org/doc/draft-irtf-cfrg-concrete-hybrid-kems/
-
 #[test]
 fn test_a_1_1_mlkem768_p256 () 
 {
@@ -130,13 +130,14 @@ fn test_a_1_1_mlkem768_p256 ()
    let shared_secret = hex!("9bd018e869bb01b63fb8f5da374a73d347ea14cb2bc570b1
                    3d0908e2288ec456");
 
-    let (encapsulator, decapsulator) = kems::draft_irtf_cfrg_concrete_hybrid_kems::ConcreteMlKem768P256::derive_from_seed(&seed.into());
+    let (encapsulator, decapsulator) = ConcreteMlKem768P256::generate_deterministic(&seed.into()).unwrap();
 
-    assert_eq!(encapsulator.as_bytes().as_slice(), &encapsulation_key );
-    assert_eq!(&decapsulator.as_bytes().as_slice(), &[decapsulation_key_pq.as_slice(), decapsulation_key_t.as_slice()].concat() );
-    assert_eq!(&decapsulator.as_seed_bytes().unwrap(), &decapsulation_key );
+    assert_eq!(encapsulator.get_recipient_public_key_bytes(), encapsulation_key.as_slice() );
+    assert_eq!(decapsulator.decapsulator1.to_bytes(), decapsulation_key_pq);
+    assert_eq!(decapsulator.decapsulator2.to_bytes(), decapsulation_key_t );
+    assert_eq!(&decapsulator.to_bytes(), &decapsulation_key );
 
-    let encapsulator = kems::draft_irtf_cfrg_concrete_hybrid_kems::ConcreteMlKem768P256::from_bytes_encap(&GenericArray::from_slice(&encapsulation_key));
+    let encapsulator = <ConcreteMlKem768P256 as Capsulator>::Encapsulator::try_from(encapsulation_key.as_slice()).unwrap();
 
     let (c0_calc, k_calc) = encapsulator.encapsulate_deterministic(&randomness).unwrap();
     assert_eq! ( c0_calc.as_ref(), ciphertext );
@@ -268,13 +269,14 @@ fn test_a_2_1_mlkem768_x25519 ()
     let shared_secret = hex!("e5ba94031ea6efd69c09c254f6d9783136ba6037e2d4c43b
                    cccf19d6f3f4343a");
 
-    let (encapsulator, decapsulator) = kems::xwing::XwingMlKem768X25519::derive_from_seed(&seed.into());
+    let (encapsulator, decapsulator) = XwingMlKem768X25519::generate_deterministic(&seed.into()).unwrap();
 
-    assert_eq!(encapsulator.as_bytes().as_slice(), &encapsulation_key );
-    assert_eq!(&decapsulator.as_bytes().as_slice(), &[decapsulation_key_pq.as_slice(), decapsulation_key_t.as_slice()].concat() );
-    assert_eq!(&decapsulator.as_seed_bytes().unwrap(), &decapsulation_key );
+    assert_eq!(encapsulator.get_recipient_public_key_bytes(), encapsulation_key.as_slice() );
+    assert_eq!(decapsulator.decapsulator1.to_bytes(), decapsulation_key_pq);
+    assert_eq!(decapsulator.decapsulator2.to_bytes(), decapsulation_key_t);
+    assert_eq!(&decapsulator.to_bytes(), &decapsulation_key );
 
-    let encapsulator = kems::xwing::XwingMlKem768X25519::from_bytes_encap(&GenericArray::from_slice(&encapsulation_key));
+    let encapsulator = <XwingMlKem768X25519 as Capsulator>::Encapsulator::try_from(encapsulation_key.as_slice()).unwrap();
 
     let (c0_calc, k_calc) = encapsulator.encapsulate_deterministic(&randomness).unwrap();
     assert_eq! ( c0_calc.as_ref(), ciphertext );
@@ -451,13 +453,14 @@ fn test_a_3_1_mlkem1024_p384 ()
     let shared_secret = hex!("8c028c6ea72a1c59408e2b15dd8fed8008517e861cd2329b
                    159bda1919ea656c");
 
-    let (encapsulator, decapsulator) = kems::draft_irtf_cfrg_concrete_hybrid_kems::ConcreteMlKem1024P384::derive_from_seed(&seed.into());
+    let (encapsulator, decapsulator) = ConcreteMlKem1024P384::generate_deterministic(&seed.into()).unwrap();
 
-    assert_eq!(encapsulator.as_bytes().as_slice(), &encapsulation_key );
-    assert_eq!(&decapsulator.as_bytes().as_slice(), &[decapsulation_key_pq.as_slice(), decapsulation_key_t.as_slice()].concat() );
-    assert_eq!(&decapsulator.as_seed_bytes().unwrap(), &decapsulation_key );
+    assert_eq!(encapsulator.get_recipient_public_key_bytes(), encapsulation_key.as_slice() );
+    assert_eq!(decapsulator.decapsulator1.to_bytes(), decapsulation_key_pq);
+    assert_eq!(decapsulator.decapsulator2.to_bytes(), decapsulation_key_t );
+    assert_eq!(&decapsulator.to_bytes(), &decapsulation_key );
 
-    let encapsulator = kems::draft_irtf_cfrg_concrete_hybrid_kems::ConcreteMlKem1024P384::from_bytes_encap(&GenericArray::from_slice(&encapsulation_key));
+    let encapsulator = <ConcreteMlKem1024P384 as Capsulator>::Encapsulator::try_from(encapsulation_key.as_slice()).unwrap();
 
     let (c0_calc, k_calc) = encapsulator.encapsulate_deterministic(&randomness).unwrap();
     assert_eq! ( c0_calc.as_ref(), ciphertext );

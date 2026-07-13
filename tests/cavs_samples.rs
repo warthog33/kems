@@ -11,14 +11,14 @@ use kdfs::nistsp800_56::ConcatKdf;
 use kdfs::hybrid_array::Array;
 
 use kems::nistsp800_56a::EccOnePassUnifiedCapsulator;
-use kems::{Decapsulate, EncapsulateDeterministic2, Capsulator, FromKeys, SetKdf};
+use kems::{Decapsulate, EncapsulateDeterministic2, Capsulator, SetKdf};
 use kems::eckem::{EcMqvAuthCapsulator, EcRawEncoder, EcUncompressedEncoder, EcdhAuthCapsulatorCompressed, EcdhKem, SeedAsScalar};
 use kems::kem_with_kdf::{CombinerNoKeys, KemWithKdf, KemAuthWithKdf};
     
-use p521::NistP521;
 use p224::NistP224;
 use p256::NistP256;
 use p384::NistP384;
+use p521::NistP521;
 use sha2::{Sha224, Sha256, Sha512};
 
 
@@ -29,6 +29,7 @@ use sha2::{Sha224, Sha256, Sha512};
 #[test]
 #[allow(non_snake_case)]
 fn test_cavp_kasvs_ecdh_p256() {
+    
     let dsCAVS = hex!("7f73262f313adb4cca2da50a401e7d1888b07e67ec5efe0fa32be786501f4e6e");
     let QsCAVSx = hex!("8b27d83dcb54328c8282aa46055c49814b9dc68f49a4d29e723e1ecfa1d6f0cb");
     let QsCAVSy = hex!("995e1ec4f5dc04e407dabc434c5b0da15bf033466ae1a32fb7108db414bfd1db");
@@ -124,7 +125,7 @@ fn test_cavp_kasvs_mqv1_p384()
     // With new traits
     type MqvAuthP384ConcatSha512 = KemAuthWithKdf<EcMqvAuthCapsulator<NistP384, EcUncompressedEncoder<NistP384>>, CombinerNoKeys, ConcatKdf<Sha512>, U24>;
 
-    let mut encapsulator = <MqvAuthP384ConcatSha512 as Capsulator>::Encapsulator::from_keys(QsIUT2, dsCAVS2 );
+    let mut encapsulator = MqvAuthP384ConcatSha512::encap_from_keys(QsIUT2, dsCAVS2 );
     let kdf = ConcatKdf::<Sha512>::new_with_salt(&OI);
     encapsulator.set_kdf(kdf);
     let (c0_calc, k_calc) = encapsulator.encapsulate_deterministic(&deCAVS).unwrap();
@@ -133,7 +134,7 @@ fn test_cavp_kasvs_mqv1_p384()
 
     let kdf = ConcatKdf::<Sha512>::new_with_salt(&OI);
 
-    let mut decapsulator = <MqvAuthP384ConcatSha512 as Capsulator>::Decapsulator::from_keys(QsCAVS2, dsIUT2 );
+    let mut decapsulator = MqvAuthP384ConcatSha512::decap_from_keys(QsCAVS2, dsIUT2 );
     decapsulator.set_kdf(kdf);
     let k_calc2 = decapsulator.decapsulate(&c0_calc).unwrap();
     assert_eq!( k_calc2.as_slice(), DKM);
@@ -190,12 +191,12 @@ fn test_cavp_kasvs_mqv1_p521()
 
     type MqvAuthP521ConcatSha512 = KemAuthWithKdf<EcMqvAuthCapsulator<NistP521, EcUncompressedEncoder<NistP521>>, CombinerNoKeys, ConcatKdf<Sha512>, U32>;
 
-    let mut encapsulator = <MqvAuthP521ConcatSha512 as Capsulator>::Encapsulator::from_keys(QsCAVS2, dsIUT2);
+    let mut encapsulator = MqvAuthP521ConcatSha512::encap_from_keys(QsCAVS2, dsIUT2);
     encapsulator.set_kdf(ConcatKdf::<Sha512>::new_with_salt(&OI));
     let (c0_calc, k_calc) = encapsulator.encapsulate_deterministic(&deIUT[2..]).unwrap();
     assert_eq!( k_calc.as_slice(), DKM);
 
-    let mut decapsulator = <MqvAuthP521ConcatSha512 as Capsulator>::Decapsulator::from_keys(QsIUT, dsCAVS2);
+    let mut decapsulator = MqvAuthP521ConcatSha512::decap_from_keys(QsIUT, dsCAVS2);
     decapsulator.set_kdf(ConcatKdf::<Sha512>::new_with_salt(&OI));
     let k_calc2 = decapsulator.decapsulate(&c0_calc).unwrap();
     assert_eq!( k_calc2.as_slice(), DKM);
@@ -250,12 +251,12 @@ fn test_cavp_kasvs_mqv1_p224() {
 
     type MqvAuthP224ConcatSha224 = KemAuthWithKdf<EcMqvAuthCapsulator<NistP224, EcUncompressedEncoder<NistP224>>, CombinerNoKeys, ConcatKdf<Sha224>, U14>;
     
-    let mut encapsulator = <MqvAuthP224ConcatSha224 as Capsulator>::Encapsulator::from_keys(QsCAVS2, dsIUT2 );
+    let mut encapsulator = MqvAuthP224ConcatSha224::encap_from_keys(QsCAVS2, dsIUT2 );
     encapsulator.set_kdf(ConcatKdf::<Sha224>::new_with_salt(&OI));
     let (c0_calc, k_calc) = encapsulator.encapsulate_deterministic(&deIUT).unwrap();
     assert_eq!( k_calc.as_slice(), DKM);
 
-    let mut decapsulator = <MqvAuthP224ConcatSha224 as Capsulator>::Decapsulator::from_keys(QsIUT, dsCAVS2);
+    let mut decapsulator = MqvAuthP224ConcatSha224::decap_from_keys(QsIUT, dsCAVS2);
     decapsulator.set_kdf(ConcatKdf::<Sha224>::new_with_salt(&OI));
     let k_calc2 = decapsulator.decapsulate(&c0_calc).unwrap();
     assert_eq!( k_calc2.as_slice(), DKM);
@@ -308,13 +309,17 @@ fn test_cavp_kasvs_econepass_unified_p224() {
     assert! ( QsIUT.as_affine().x() == QsIUTx);
     assert! ( QsIUT.as_affine().y() == QsIUTy);
 
+    type AuthKemConcatKdf<C,D> = KemAuthWithKdf::<EcdhAuthCapsulatorCompressed<C,SeedAsScalar>, CombinerNoKeys, ConcatKdf<D>, U14>;
+
     // With new traits
-    let mut encapsulator = <KemAuthWithKdf::<EcdhAuthCapsulatorCompressed<_,SeedAsScalar>, CombinerNoKeys, ConcatKdf<Sha224>, U14> as Capsulator>::Encapsulator::from_keys(QsCAVS2, dsIUT2);
+    //let mut encapsulator = <KemAuthWithKdf::<EcdhAuthCapsulatorCompressed<_,SeedAsScalar>, CombinerNoKeys, ConcatKdf<Sha224>, U14> as Capsulator>::Encapsulator::from_keys(QsCAVS2, dsIUT2);
+    let mut encapsulator = AuthKemConcatKdf::<_, Sha224>::encap_from_keys(QsCAVS2, dsIUT2);
     encapsulator.set_kdf(ConcatKdf::<Sha224>::new_with_salt(&OI));
     let (c0_calc, k_calc) = encapsulator.encapsulate_deterministic(&deIUT).unwrap();
     assert_eq!( k_calc.as_slice(), DKM);
 
-    let mut decapsulator = <KemAuthWithKdf::<EcdhAuthCapsulatorCompressed<_,SeedAsScalar>, CombinerNoKeys, ConcatKdf<Sha224>, U14> as Capsulator>::Decapsulator::from_keys(QsIUT, dsCAVS2);
+    //let mut decapsulator = <KemAuthWithKdf::<EcdhAuthCapsulatorCompressed<_,SeedAsScalar>, CombinerNoKeys, ConcatKdf<Sha224>, U14> as Capsulator>::Decapsulator::from_keys(QsIUT, dsCAVS2);
+    let mut decapsulator = AuthKemConcatKdf::<_, Sha224>::decap_from_keys(QsIUT, dsCAVS2);
     decapsulator.set_kdf(ConcatKdf::<Sha224>::new_with_salt(&OI));
     let k_calc2 = decapsulator.decapsulate(&c0_calc).unwrap();
     assert_eq!( k_calc2.as_slice(), DKM);
@@ -368,7 +373,7 @@ fn test_cavp_kasvs_econepass_unified_p521() {
     assert! ( QsIUT.as_affine().y().as_slice() == &QsIUTy[2..]);
 
     // With new traits
-    let mut encapsulator = <EccOnePassUnifiedCapsulator<NistP521, _, U32> as Capsulator>::Encapsulator::from_keys(QsCAVS2, dsIUT2);
+    let mut encapsulator = EccOnePassUnifiedCapsulator::<NistP521, _, U32>::encap_from_keys(QsCAVS2, dsIUT2);
     encapsulator.set_kdf(ConcatKdf::<Sha512>::new_with_salt(&OI));
     let (c0_calc, k_calc) = encapsulator.encapsulate_deterministic(&deIUT[2..]).unwrap();
     assert_eq!( k_calc, DKM);
@@ -376,7 +381,7 @@ fn test_cavp_kasvs_econepass_unified_p521() {
     assert_eq!( &c0_calc[67..], &QeIUTy[2..]);
 
 
-    let mut decapsulator = <EccOnePassUnifiedCapsulator<NistP521, ConcatKdf<Sha512>, U32> as Capsulator>::Decapsulator::from_keys(QsIUT, dsCAVS2 );
+    let mut decapsulator = EccOnePassUnifiedCapsulator::<NistP521, ConcatKdf<Sha512>, U32>::decap_from_keys(QsIUT, dsCAVS2 );
     decapsulator.set_kdf(ConcatKdf::<Sha512>::new_with_salt(&OI));
     let k_calc2 = decapsulator.decapsulate(&c0_calc).unwrap();
     assert_eq!( k_calc2.as_slice(), DKM);

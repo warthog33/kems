@@ -1,10 +1,10 @@
 use base64::Engine;
-use der::{Any, Choice, Decode, Length, Sequence, asn1::{BitString, OctetString}};
+use der::{Any, Choice, Decode, Length, Sequence, DecodePem, asn1::{BitString, OctetString}};
 use elliptic_curve::Error;
+use generic_array::GenericArray;
 use hex_literal::hex;
+use kems::{Capsulator, Decapsulate, mlkem::WrappedMlKem512};
 
-#[cfg(feature="rustcrypto-ml-kem")]
-use ml_kem::{EncodedSizeUser, kem::Decapsulate};
 
 // ML-KEM-PrivateKey ::= CHOICE {
 //   seed [0] IMPLICIT OCTET STRING (SIZE (64)),
@@ -20,18 +20,6 @@ enum MlKeyPrivateKeyChoice {
     Both(SeedAndExpandedKey), //both(Any),
 }
 
-// #[derive(Clone, Debug, Eq, PartialEq, Sequence)]
-// struct MlKeyPrivateKeyChoice2 {
-//     one: Any,
-//     // #[asn1(context_specific = "0", tag_mode = "IMPLICIT")]
-//     // Seed(OctetString),
-//     // ExpandedKey(OctetString),
-//     // Both(SeedAndExpandedKey), //both(Any),
-// }
-
-// impl DecodeOwned for MlKeyPrivateKeyChoice {
-    
-// }
 #[derive(Clone, Debug, Eq, PartialEq, Sequence)]
 struct SeedAndExpandedKey 
 {
@@ -39,37 +27,14 @@ struct SeedAndExpandedKey
     expanded_key: OctetString,
 }
 
-// #[derive(Clone, Debug, Eq, PartialEq, Sequence)]
-// pub struct PrivateKeyInfo
-// {
-//     pub version: rsa::pkcs1::Version,
-
-// ///         privateKeyAlgorithm       PrivateKeyAlgorithmIdentifier,
-// ///         privateKey                PrivateKey,
-// ///         attributes           [0]  IMPLICIT Attributes OPTIONAL }
-// /// 
-//     /// X.509 `AlgorithmIdentifier` for the private key type.
-//     pub algorithm: AlgorithmIdentifier<Any>, //<Params>,
-
-//     /// Private key data. Exact content format is different between algorithms.
-//     pub private_key: Any,
-
-//     // Public key data, optionally available if version is V2.
-//     pub public_key: Option<Any>,
-// }
-
 
 //
 // openssl genpkey -algorithm ML-KEM-512 -out ml-kem-private-key.pem
 // openssl pkey -in ml-kem-private-key.pem -pubout -out ml-kem-public-key.pem
 // openssl pkeyutl -encap -pubin -inkey ml-kem-public-key.pem -secret ss1.dat -out ctext.dat
 //
-#[cfg(feature="rustcrypto-rsa")]
 #[test]
-fn test_ml_kem_512 () -> Result<(), Error>{
-    use der::DecodePem;
-
-
+fn test_ml_kem_512 () -> Result<(), Error>{    
     let private_key = "-----BEGIN PRIVATE KEY-----\n\
         MIIGvgIBADALBglghkgBZQMEBAEEggaqMIIGpgRAMSah+Hu3Z6LU9N9YEZLi7BT3\n\
         R6lF1SdIAU36vU6Py+XSB9gzZvwgrBaWGUS3Wu0rxW/Z4iHOrdD1qpXvKNE5EwSC\n\
@@ -148,10 +113,9 @@ fn test_ml_kem_512 () -> Result<(), Error>{
     let ct = base64::engine::general_purpose::STANDARD.decode(ct).unwrap();
     assert_eq! ( ct.len(), 768);
 
-    let decapsulator = <ml_kem::kem::Kem<ml_kem::MlKem512Params> as ml_kem::KemCore>::DecapsulationKey::from_bytes(&seed_and_expanded_key.expanded_key.as_bytes().try_into().unwrap());
-
-    
-    let ss2 = decapsulator.decapsulate(&ct.as_slice().try_into().unwrap()).unwrap();
+    //let decapsulator = WrappedMlKem512::try_from_slice_decap(&seed_and_expanded_key.seed.as_bytes()).unwrap(); 
+    let decapsulator = WrappedMlKem512::from_bytes_decap(&seed_and_expanded_key.seed.as_bytes().try_into().unwrap()); 
+    let ss2 = decapsulator.decapsulate(&GenericArray::from_slice(ct.as_slice())).unwrap();
 
     assert_eq! ( ss2, ss);
 
