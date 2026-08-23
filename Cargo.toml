@@ -26,8 +26,9 @@ rustcrypto-aeskw =["dep:aes-kw"]
 oid = ["dep:const-oid"]
 
 [dependencies]
-kem = { version = "0.3.0", feature=["getrandom"] }
+kem = { version = "0.3.0", features=["getrandom"] }
 kdfs = { path = "../kdfs" }
+hybrid-array = { version = "0.4.11", features=["extra-sizes"]}
 cipher = { version = "0.5.0-rc.0", features = ["alloc"] }
 digest = "0.11.0"
 elliptic-curve = { version = "0.14.0", features = ["ecdh", "sec1"], package="elliptic-curve" }
@@ -35,7 +36,9 @@ crypto-bigint = { version = "0.7.0-rc.1" }
 rand_core = { version = "0.6.4", features = ["getrandom"], package="rand_core" }  # needed by src/lib.rs
 #rand_core = { version = "0.10.0-rc-2", package="rand_core" }  # needed by src/lib.rs
 rand = { version = "0.10.0-rc.8"}
-generic-array = { version = "1.3.5", features=["hybrid-array-0_4"] }
+rand8 = { version = "0.8.0", package="rand"}
+
+#generic-array = { version = "1.3.5", features=["hybrid-array-0_4"] }
 const-oid = { version = "0.10.0", features=["db"], optional = true }
 
 k256 = { version = "0.14.0-rc.14", optional = true }
@@ -46,7 +49,7 @@ p521 = { version = "0.14.0-rc.14", optional = true }
 bp256 = { version = "0.14.0-rc.14", features = ["pkcs8", "arithmetic"], optional = true }
 bp384 = { version = "0.14.0-rc.14", features = ["pkcs8", "arithmetic"], optional = true }
 #ml-kem = { version = "0.2.1", optional = true, features=["deterministic"] }
-ml-kem = { version = "0.3.0", optional = true, features=["hazmat","getrandom"] }
+ml-kem = { version = "0.3.0", optional = true, features=["hazmat","getrandom","pkcs8"] }
 sha1 = { version = "0.11.0", optional = true }
 sha2 = { version = "0.11.0", optional = true }
 sha3 = { version = "0.12.0", optional = true }
@@ -62,5 +65,11 @@ hex-literal = "0.4.1"
 kems = { path = ".", features = ["all"] } 
 der = { version = "0.8.0-rc.10", features=["derive"], package="der"}
 base64 = "0.21.5"
+classic-mceliece-rust = { version = "3.1.0", features = ["mceliece348864f", "kem", "alloc"]}
+rand_chacha = { version = "0.3.0"}
+#tectonic-bedrock = { version = "0.2.0", features=["mceliece"] }
 
 serde_json = "1.0.128"
+
+[patch.crates-io]
+hybrid-array = { path = "../hybrid-array-mod" }

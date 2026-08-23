@@ -1,26 +1,19 @@
 use cipher::consts::U16;
 use cipher::common::KeyExport;
-use digest::FixedOutput;
+use digest::{FixedOutput,Mac};
 use hex_literal::hex;
-use hmac::Hmac;
-use hmac::HmacReset;
-use hmac::KeyInit;
+use hmac::{Hmac,HmacReset,KeyInit};
+use kdfs::Kdf;
 use kdfs::nistsp800_56::SskdfMac;
 use kdfs::rfc5869_hkdf::Hkdf;
-//use kems::GetEncapsulator;
+use kems::Array;
 use kems::eckem::EcRawEncoder;
-use kems::eckem::EcXonlyEncoder;
-use kems::eckem::SeedAsScalar;
-// use ml_kem::KemCore;
-// use ml_kem::EncodedSizeUser;
-use ml_kem::kem::Decapsulate;
-use kdfs::Kdf;
-use kems::GenerateDeterministic3;
+use kem::{Decapsulate, FromSeed};
+
 use p256::NistP256;
 use p384::U48;
-use sha2::Sha256;
-use sha2::Digest;
-use digest::Mac;
+use sha2::{Sha256,Digest};
+
 
 // KDF as HKDF with SHA256, ECDH with NIST P-256, and ML-KEM768
 #[ignore]
@@ -98,14 +91,14 @@ D412050CE09EC31075001286F401A58FE6217000D6A9C8BA753C4CE9D1D8CF8B908614DF0A81");
     let prvA1 = p256::elliptic_curve::SecretKey::<p256::NistP256>::from_bytes(&dA1.into()).unwrap();
     let _pubA2 = prvA1.public_key();
 
-    let (e,d) = kems::eckem::EcdhKem::<NistP256,EcRawEncoder<NistP256>,SeedAsScalar,EcXonlyEncoder<NistP256>>::generate_deterministic(&dA1.into()).unwrap();
+    let (d,e) = kems::eckem::EcdhKem::<NistP256,EcRawEncoder<NistP256>>::from_seed(&dA1.into());
 
     //println! ( "{:02X?}", e.as_bytes());
     assert_eq! ( e.to_bytes().as_slice(), &PA1);
 
-    use kems::Decapsulate;
-    let k1_calc = d.decapsulate(&PB1.into()).unwrap();
-    assert_eq! ( k1_calc, k1);
+    let k_calc = d.decapsulate(&PB1.into());
+    assert_eq! ( k1, k_calc[..32]);
+    assert_eq! ( k2, k_calc[32..]);
 
     //let (prv1, pub2) = ml_kem::MlKem768::generate_deterministic(&dA2.into(), &zA2.into());
     let prv1 = ml_kem::ml_kem_768::DecapsulationKey::from_seed([dA2, zA2].concat().try_into().unwrap());
@@ -133,7 +126,7 @@ D412050CE09EC31075001286F401A58FE6217000D6A9C8BA753C4CE9D1D8CF8B908614DF0A81");
                 &MB
                 ].concat());
                                 
-    let km_calc = Hkdf::<Sha256>::derive_secrets_others::<U16>([k1.as_slice(),k2.as_slice()], [&label, context_calc.as_slice() ]).unwrap();
+    let km_calc: kems::Array<u8, U16> = Hkdf::<Sha256>::derive_secrets_others([k1.as_slice(),k2.as_slice()], [&label, context_calc.as_slice() ]);
 
     println! ( "km_calc={:02X?}", km_calc);
     assert_eq!(km_calc, key_material);
@@ -239,7 +232,7 @@ DB440D6A2C9BB3B140569C51C985A2B0BE03ABA918C2311B11069FC9A0C762CCA59C1BDAE47C0406
 
     println! ( "km_calc={:02X?}", km_calc);
 
-    let km_calc = SskdfMac::<HmacReset<Sha256>>::derive_secrets_salt_others::<U16> ( [k1.as_slice(), k2.as_slice()], &label, [context_calc.as_slice()]).unwrap();
+    let km_calc: Array<u8, U16> = SskdfMac::<HmacReset<Sha256>>::derive_secrets_salt_others ( [k1.as_slice(), k2.as_slice()], &label, [context_calc.as_slice()]);
     
     println! ( "km_calc={:02X?}", km_calc);
     assert_eq!(km_calc[..16], key_material);
@@ -369,7 +362,7 @@ fn test_d_3_2()
 
     println! ( "round_secret={:02X?}", round_secret1);
 
-    let chain_secret_key_mat = SskdfMac::<HmacReset<Sha256>>::derive_secret_salt_others::<U48> ( &round_secret1, &label1, [context.as_bytes()]).unwrap();
+    let chain_secret_key_mat: Array<u8, U48> = SskdfMac::<HmacReset<Sha256>>::derive_secret_salt_other ( &round_secret1, &label1, context.as_bytes());
 
     let mut km_calc2 = Hmac::<Sha256>::new_from_slice(&round_secret1).unwrap();
     km_calc2.update(&1u32.to_be_bytes());

@@ -13,40 +13,36 @@
 //! use elliptic_curve::sec1::UncompressedPointSize;
 //! use p256::{SecretKey, NistP256, elliptic_curve::Generate};
 //! use sha2::Sha256;
-//! use kems::eckem::{EcdhKemCompressed2, EcdhDecapsulatorCompressed, EcdhDecapsulator, EcCompressedEncoder};
+//! use kems::KemExtensions;
+//! use kems::eckem::{EcdhKemCompressed, EcdhDecapsulatorCompressed, EcdhDecapsulator, EcCompressedEncoder};
 //! use kdfs::ansi_x9_63::X963KdfSha256;
 //! use kems::kem_with_kdf::{KemWithKdf, CombinerNoKeys};
-//! use kems::{Capsulator, FromKey, Encapsulate, Decapsulate};
-//! use rand_core::OsRng;
+//! use kems::{FromKey};
+//! use kem::{Encapsulate, Decapsulate};
 //! 
 //! 
 //! let recipient_secret_key = SecretKey::generate();
 //! let recipient_public_key = recipient_secret_key.public_key();
 //! 
-//! type EcdhX963Sha256<C> = KemWithKdf<EcdhKemCompressed2<C>, CombinerNoKeys, X963KdfSha256, U32>;
-//! //let encapsulator = EcdhEncapsulatorCompressed::<_,EcCombinerX963<Sha256>,U32>::from_key(recipient_public_key);
+//! type EcdhX963Sha256<C> = KemWithKdf<EcdhKemCompressed<C>, CombinerNoKeys, X963KdfSha256, U32>;
 //! let encapsulator = EcdhX963Sha256::from_public_key(recipient_public_key);
-//! let (ct, k_send) = encapsulator.encapsulate(&mut OsRng).unwrap();
+//! let (ct, k_send) = encapsulator.encapsulate();
 //! 
-//! //let decapsulator = EcdhDecapsulatorCompressed::<_,EcCombinerX963<Sha256>,U32>::from_key(recipient_secret_key);
 //! let decapsulator = EcdhX963Sha256::from_private_key(recipient_secret_key);
-//! let k_recv = decapsulator.decapsulate(&ct).unwrap();
+//! let k_recv = decapsulator.decapsulate(&ct);
 //! assert! ( k_send == k_recv);
 //! ```
   
-
-use std::array::TryFromSliceError;
-use std::borrow::Cow;
-use std::convert::Infallible;
 use std::marker::PhantomData;
 use std::fmt::Debug;
 use std::ops::{Add, Sub};
-use cipher::{KeyInit, KeySizeUser};
+use cipher::{KeySizeUser};
 use cipher::common::KeyExport;
 #[allow(unused)]
 use cipher::consts::{U1,U2};
 #[allow(unused)]
 use cipher::typenum::{Diff, Quot, Sum};
+use cipher::typenum::Unsigned;
 use const_oid::AssociatedOid;
 use elliptic_curve::{AffinePoint, Curve, CurveArithmetic, FieldBytesSize, Generate, NonZeroScalar, PrimeCurve, ProjectivePoint, PublicKey, Scalar, ScalarValue, SecretKey};
 use elliptic_curve::bigint::Encoding;
@@ -55,81 +51,61 @@ use elliptic_curve::sec1::{CompressedPointSize, FromSec1Point, ModulusSize, Sec1
 use elliptic_curve::point::{AffineCoordinates, PointCompression,DecompactPoint};
 #[allow(unused)]
 use elliptic_curve::bigint::ArrayEncoding;
-use generic_array::{ArrayLength, GenericArray};
-use generic_array::typenum::Unsigned;
+
 use kdfs::hybrid_array::{Array, ArraySize};
-use kem::{Decapsulator, TryKeyInit, TryDecapsulate};
+use kem::{Ciphertext, Decapsulate, DecapsulationKey, Decapsulator, Encapsulate, EncapsulationKey, FromSeed, InvalidKey, Kem, Key, Seed, SharedKey, TryKeyInit};
 
-use crate::{Capsulator, CryptoRngCore, Decapsulate, DecodeSlice, Encapsulate, EncapsulateDeterministic2, EncodeGenericArray, EncodeHybridArray, GenerateDeterministic2, GenerateDeterministic4};
-use crate::{FromKey, FromKeys, GenerateDeterministic3, GetRecipientPublicKeyBytes, GetSenderPublicKeyBytes};
+use crate::{EncapsulateDeterministic};
+use crate::{FromKey, FromKeys};
 
-#[cfg(feature="rustcrypto-p256")]
-use p256::NistP256;
-#[cfg(feature="rustcrypto-p384")]
-use p384::NistP384;
-
-// pub trait SecretPointToBytes<C: CurveArithmetic> {
-//     type EncodedLen: ArraySize;
-//     fn encode ( point: &AffinePoint<C> ) -> Array<u8, Self::EncodedLen>;
-// }
-
-// pub trait Encode2<T> {
-//     type EncodedLen: ArraySize;
-//     fn encode ( point: &T ) -> Array<u8, Self::EncodedLen>;
-// }
+pub type UntaggedPointSize<C> = <FieldBytesSize<C> as ModulusSize>::UntaggedPointSize;
 
 
-// Structure implementing the encoding of X and Y coordinates only
-//pub struct XandY<C: Curve>(C);
+/// Used for encoding a public key or shared secret to a byte array
+pub trait EcEncode<C: CurveArithmetic> {
+    type Error: Debug;
+    
+    type PublicKeyLen: ArraySize;
+    fn encode_public_key(source: &PublicKey<C>) -> Array<u8, Self::PublicKeyLen>;
+    fn decode_public_key(encoded_bytes: &[u8]) -> Result<PublicKey<C>, Self::Error>;
+    
+    // type CiphertextLen: ArraySize;
+    // fn encode_ciphertext(source: &PublicKey<C>) -> Array<u8, Self::CiphertextLen>;
+    // fn decode_ciphertext(source: &Array<u8, Self::CiphertextLen>) -> Result<PublicKey<C>, Self::Error>;
 
-// impl<C> SecretPointToBytes<C> for Xonly<C>
-// where C: CurveArithmetic
-// {
-//     type EncodedLen = C::FieldBytesSize;
+    type SharedSecretLen: ArraySize;
+    fn encode_shared_secret ( point: &AffinePoint<C> ) -> Array<u8, Self::SharedSecretLen>;
+}
 
-//     fn encode ( point: &AffinePoint<C> ) -> Array<u8, Self::EncodedLen> {
-//         point.x()
-//     }
-// }
 
 ///
 /// Encodes by outputing the X coordinate as a big endian byte array
 /// 
-pub struct EcXonlyEncoder<C: Curve>(C);
+pub struct EcCompactEncoder<C: Curve>(PhantomData<C>);
 
-
-impl<C: CurveArithmetic> EncodeHybridArray<AffinePoint<C>> for EcXonlyEncoder<C>
+impl<C> EcEncode<C> for EcCompactEncoder<C>
+where   C: CurveArithmetic + PointCompression, 
+        C::AffinePoint: FromSec1Point<C> + ToSec1Point<C> + DecompactPoint<C>,
+        C::FieldBytesSize: ModulusSize,
 {
-    type EncodedLen = <C as elliptic_curve::Curve>::FieldBytesSize;
+    type Error = elliptic_curve::Error;
+    type PublicKeyLen = C::FieldBytesSize;
+    type SharedSecretLen = C::FieldBytesSize;
 
-    fn encode ( point: &AffinePoint<C> ) -> Array<u8, Self::EncodedLen> {
+    fn encode_public_key(public_key: &PublicKey<C>) -> Array<u8, Self::PublicKeyLen> {
+        public_key.as_affine().x()
+    }
+        
+    fn decode_public_key(encoded_bytes: &[u8]) -> Result<PublicKey<C>, Self::Error> {
+        let array = encoded_bytes.try_into()?;
+        let point = Option::from(AffinePoint::<C>::decompact(array)).ok_or(elliptic_curve::Error)?;
+        PublicKey::<C>::from_affine(point)
+    }
+    
+    fn encode_shared_secret ( point: &AffinePoint<C> ) -> Array<u8, Self::SharedSecretLen> {
         point.x()
     }
 }
-impl<C> DecodeSlice<PublicKey<C>> for EcXonlyEncoder<C>
-where C: CurveArithmetic,
-    C::FieldBytesSize: ModulusSize,
-    C::AffinePoint: DecompactPoint<C>
-{
-    type Error = elliptic_curve::Error;
-    fn decode(encoded_bytes: &[u8]) -> Result<PublicKey<C>, Self::Error> {
-        let point = AffinePoint::<C>::decompact(encoded_bytes.try_into().unwrap()).unwrap();
-        PublicKey::<C>::from_affine(point)
-    }
-}
-
-impl<C> EncodeGenericArray<PublicKey<C>> for EcXonlyEncoder<C>
-where   C: CurveArithmetic + PointCompression, 
-        C::AffinePoint: FromSec1Point<C> + ToSec1Point<C>,
-        C::FieldBytesSize: ModulusSize + ArrayLength,
-        <C::FieldBytesSize as ModulusSize>::CompressedPointSize: ArrayLength, //<u8>,
-{
-    type EncodedLen = C::FieldBytesSize;
-    fn encode(public_key: &PublicKey<C>) -> GenericArray<u8, Self::EncodedLen> {
-        public_key.as_affine().x().try_into().unwrap()
-    }
-}
-
 
 
 ///
@@ -137,30 +113,26 @@ where   C: CurveArithmetic + PointCompression,
 ///
 pub struct EcCompressedEncoder<C> ( PhantomData<C>);
 
-impl<C> EncodeGenericArray<PublicKey<C>> for EcCompressedEncoder<C>
-where   C: CurveArithmetic + PointCompression, 
-        C::AffinePoint: FromSec1Point<C> + ToSec1Point<C>,
-        C::FieldBytesSize: ModulusSize,
-        <C::FieldBytesSize as ModulusSize>::CompressedPointSize: ArrayLength, //<u8>,
-{
-    type EncodedLen = CompressedPointSize<C>;
-    fn encode(public_key: &PublicKey<C>) -> GenericArray<u8, Self::EncodedLen> {
-        let ephemeral_public_encoded = ToSec1Point::to_sec1_point(public_key, true);
-        GenericArray::from_slice(ephemeral_public_encoded.as_bytes()).clone()
-    }
-}
 
-impl<C> DecodeSlice<PublicKey<C>> for EcCompressedEncoder<C>
+impl<C> EcEncode<C> for EcCompressedEncoder<C>
 where C: CurveArithmetic,
     C::FieldBytesSize: ModulusSize,
     C::AffinePoint: FromSec1Point<C> + ToSec1Point<C>
 {
     type Error = elliptic_curve::Error;
-    fn decode(encoded_bytes: &[u8]) -> Result<PublicKey<C>, Self::Error> {
+    type PublicKeyLen = CompressedPointSize<C>;
+    type SharedSecretLen = FieldBytesSize<C>;
+        
+    fn encode_public_key(public_key: &PublicKey<C>) -> Array<u8, Self::PublicKeyLen> {
+        public_key.to_compressed_point()
+    }
+    fn decode_public_key(encoded_bytes: &[u8]) -> Result<PublicKey<C>, Self::Error> {
         PublicKey::<C>::from_sec1_bytes(encoded_bytes)
     }
+    fn encode_shared_secret ( point: &AffinePoint<C> ) -> Array<u8, Self::SharedSecretLen> {
+        point.x()
+    }
 }
-
 
 
 ///
@@ -168,26 +140,23 @@ where C: CurveArithmetic,
 ///
 pub struct EcUncompressedEncoder<C> ( PhantomData<C>);
 
-impl<C> EncodeGenericArray<PublicKey<C>> for EcUncompressedEncoder<C>
+impl<C> EcEncode<C> for EcUncompressedEncoder<C>
 where   C: CurveArithmetic+PointCompression, 
         C::FieldBytesSize: ModulusSize,
         C::AffinePoint: FromSec1Point<C> + ToSec1Point<C>,
-        <C::FieldBytesSize as ModulusSize>::UncompressedPointSize: ArrayLength, //<u8>
-{
-    type EncodedLen = UncompressedPointSize<C>;
-    fn encode(public_key: &PublicKey<C>) -> GenericArray<u8, Self::EncodedLen> {
-        GenericArray::from_slice(ToSec1Point::to_sec1_point(public_key, false).as_bytes()).clone()
-    }
-}
-
-impl<C> DecodeSlice<PublicKey<C>> for EcUncompressedEncoder<C>
-where C: CurveArithmetic,
-    C::FieldBytesSize: ModulusSize,
-    C::AffinePoint: FromSec1Point<C> + ToSec1Point<C>
 {
     type Error = elliptic_curve::Error;
-    fn decode(encoded_bytes: &[u8]) -> Result<PublicKey<C>, Self::Error> {
+    type PublicKeyLen = UncompressedPointSize<C>;
+    type SharedSecretLen = FieldBytesSize<C>;
+    
+    fn encode_public_key(public_key: &PublicKey<C>) -> Array<u8, Self::PublicKeyLen> {
+        public_key.to_uncompressed_point()
+    }
+    fn decode_public_key(encoded_bytes: &[u8]) -> Result<PublicKey<C>, Self::Error> {
         PublicKey::<C>::from_sec1_bytes(encoded_bytes)
+    }
+    fn encode_shared_secret ( point: &AffinePoint<C> ) -> Array<u8, Self::SharedSecretLen> {
+        point.x()
     }
 }
 
@@ -199,138 +168,176 @@ where C: CurveArithmetic,
 /// 
 pub struct EcRawEncoder<C> ( PhantomData<C>);
 
-impl<C> EncodeGenericArray<PublicKey<C>> for EcRawEncoder<C>
+impl<C> EcEncode<C> for EcRawEncoder<C>
     where   C: CurveArithmetic+PointCompression, 
         C::FieldBytesSize: ModulusSize,
         C::AffinePoint: FromSec1Point<C> + ToSec1Point<C>,
-        <C::FieldBytesSize as ModulusSize>::UntaggedPointSize: ArrayLength, //<u8>
-{
-    type EncodedLen = <FieldBytesSize<C> as ModulusSize>::UntaggedPointSize;
-
-    // returns the untagged byte array, x || y
-    fn encode(public_key: &PublicKey<C>) -> GenericArray<u8, Self::EncodedLen> {
-        let ephemeral_public_encoded = ToSec1Point::to_sec1_point(public_key, false);
-        GenericArray::from_slice(&ephemeral_public_encoded.as_bytes()[1..]).clone()
-    }
-}
-impl<C> DecodeSlice<PublicKey<C>> for EcRawEncoder<C>
-where C: CurveArithmetic,
-    C::FieldBytesSize: ModulusSize,
-    C::AffinePoint: FromSec1Point<C> + ToSec1Point<C>
+        UncompressedPointSize<C>: Sub<U1, Output = UntaggedPointSize<C>>,
 {
     type Error = elliptic_curve::Error;
-    fn decode(encoded_bytes: &[u8]) -> Result<PublicKey<C>, Self::Error> {
+    type PublicKeyLen = UntaggedPointSize<C>;
+    type SharedSecretLen = UntaggedPointSize<C>;
+
+    // returns the untagged byte array, x || y
+    fn encode_public_key(public_key: &PublicKey<C>) -> Array<u8, Self::PublicKeyLen> {
+        let (_, payload) = public_key.to_uncompressed_point().split::<U1>();
+        payload
+    }
+    fn decode_public_key(encoded_bytes: &[u8]) -> Result<PublicKey<C>, Self::Error> {
         let encoded_point = Sec1Point::<C>::from_untagged_bytes(&Array::try_from(encoded_bytes)?);
         PublicKey::<C>::from_sec1_point(&encoded_point).into_option().ok_or(elliptic_curve::Error)
     }
-}
-impl<C: CurveArithmetic> EncodeHybridArray<AffinePoint<C>> for EcRawEncoder<C>
-where C::AffinePoint: ToSec1Point<C>,
-    C::FieldBytesSize: ModulusSize + Debug,
-    <C::FieldBytesSize as ModulusSize>::UncompressedPointSize: Sub<U1>,
-    <<C::FieldBytesSize as ModulusSize>::UncompressedPointSize as Sub<U1>>::Output: ArraySize,
-{
-    //type EncodedLen = <C as elliptic_curve::Curve>::FieldBytesSize;
-    type EncodedLen = Diff<<C::FieldBytesSize as ModulusSize>::UncompressedPointSize, U1>;
-
-    fn encode ( point: &AffinePoint<C> ) -> Array<u8, Self::EncodedLen> {
-        let encoded_point = point.to_uncompressed_point(); //to_sec1_point(false);
-        let (_, payload) = encoded_point.split::<U1>();
+    fn encode_shared_secret ( point: &AffinePoint<C> ) -> Array<u8, Self::SharedSecretLen> {
+        let (_, payload) = point.to_uncompressed_point().split::<U1>();
         payload
     }
 }
 
+///
+/// Encodes or Decodes according to SEC1 uncompressed format, ie a single byte identifier followed by the x-coordinate and y-coordinates
+///
+pub struct EcRaw2Encoder<C> ( PhantomData<C>);
 
-/// Blanket implementations for secret keys, which is the scalar as a sequence of bytes
-impl<C,T> EncodeGenericArray<SecretKey<C>> for T
-where   C: Curve,
-        C::FieldBytesSize: ModulusSize + ArrayLength, //<u8>,
-{
-    type EncodedLen = FieldBytesSize<C>;
-    fn encode(key: &SecretKey<C>) -> GenericArray<u8, Self::EncodedLen> {
-        //GenericArray::clone_from_slice(&key.to_bytes())
-        GenericArray::from_slice(&key.to_bytes()).clone()
-    }
-}
-
-// Blanket implementation as all encoding formats have the same private key - a series of bytes representing the scalar private key
-impl<C,T> DecodeSlice<SecretKey<C>> for T
-where C: Curve,
+impl<C> EcEncode<C> for EcRaw2Encoder<C>
+where   C: CurveArithmetic+PointCompression, 
+        C::FieldBytesSize: ModulusSize,
+        C::AffinePoint: FromSec1Point<C> + ToSec1Point<C>,
+        FieldBytesSize<C>: Add,
+        UncompressedPointSize<C>: Sub<U1, Output = UntaggedPointSize<C>>,
 {
     type Error = elliptic_curve::Error;
-    fn decode(encoded_bytes: &[u8]) -> Result<SecretKey<C>, Self::Error> {
-        SecretKey::<C>::from_slice(encoded_bytes)
+    type PublicKeyLen = UntaggedPointSize<C>;
+    type SharedSecretLen = FieldBytesSize<C>;
+    
+    fn encode_public_key(public_key: &PublicKey<C>) -> Array<u8, Self::PublicKeyLen> {
+        EcRawEncoder::encode_public_key(public_key)
+    }
+    fn decode_public_key(encoded_bytes: &[u8]) -> Result<PublicKey<C>, Self::Error> {
+        EcRawEncoder::decode_public_key(encoded_bytes)
+    }
+    fn encode_shared_secret ( point: &AffinePoint<C> ) -> Array<u8, Self::SharedSecretLen> {
+        point.x()
     }
 }
 
 
-// impl<C> SecretPointToBytes<C> for XandY<C>
-// where C: CurveArithmetic,
-//     C::AffinePoint: ToSec1Point<C>,
-//     C::FieldBytesSize: ModulusSize + Debug,
-//     <C::FieldBytesSize as ModulusSize>::UncompressedPointSize: Sub<U1>,
-//     <<C::FieldBytesSize as ModulusSize>::UncompressedPointSize as Sub<U1>>::Output: ArraySize,
-// {
-//     type EncodedLen = Diff<<C::FieldBytesSize as ModulusSize>::UncompressedPointSize, U1>;
-    
-//     fn encode ( point: &AffinePoint<C> ) -> Array<u8, Self::EncodedLen> {
-//         let encoded_point = point.to_uncompressed_point(); //to_sec1_point(false);
-//         let (_, payload) = encoded_point.split::<U1>();
-//         payload
-//     }
-// }
 
-// impl<C: CurveArithmetic> Encode5<AffinePoint<C>> for XandY<C>
-// where C::AffinePoint: ToSec1Point<C>,
-//     C::FieldBytesSize: ModulusSize + Debug,
-//     <C::FieldBytesSize as ModulusSize>::UncompressedPointSize: Sub<U1>,
-//     <<C::FieldBytesSize as ModulusSize>::UncompressedPointSize as Sub<U1>>::Output: ArraySize,
-// {
-//     //type EncodedLen = <C as elliptic_curve::Curve>::FieldBytesSize;
-//     type EncodedLen = Diff<<C::FieldBytesSize as ModulusSize>::UncompressedPointSize, U1>;
+///
+/// Factory struct to create encapsulators and decapsulators using one-way Diffie-Hellman
+/// with Elliptic Curves implementing the RustCryoto CurveArithmetic traits
+/// 
+pub struct EcdhKem<C,DE> (PhantomData<C>, PhantomData<DE>);
 
-//     fn encode ( point: &AffinePoint<C> ) -> Array<u8, Self::EncodedLen> {
-//         let encoded_point = point.to_uncompressed_point(); //to_sec1_point(false);
-//         let (_, payload) = encoded_point.split::<U1>();
-//         payload
-//     }
-// }
+/// Unauthenticated KEM using elliptic curve Diffie Hellman and x-only encoding of the ciphertext, public keys and shared secret
+pub type EcdhKemCompact<C> = EcdhKem<C, EcCompactEncoder<C>>;
+
+/// Unauthenticated KEM using elliptic curve Diffie Hellman and SEC1 compressed encoding of the ciphertext and public keys, x-only shared secret
+pub type EcdhKemCompressed<C> = EcdhKem<C, EcCompressedEncoder<C>>;
+
+/// Unauthenticated KEM using elliptic curve Diffie Hellman and SEC1 uncompressed encoding of the ciphertext and public keys, x-only shared secret
+pub type EcdhKemUncompressed<C> = EcdhKem<C, EcUncompressedEncoder<C>>;
+
+/// Unauthenticated KEM using ellipitic curve Diffie Helman with raw x,y public key format of the ciphertext, public keys and shared secret
+pub type EcdhKemRaw<C> = EcdhKem<C, EcRawEncoder<C>>;
+
+/// Unauthenticated KEM using ellipitic curve Diffie Helman with raw x,y public key format of the ciphertext and public key, and x-only encoding of the shared secret
+pub type EcdhKemRaw2<C> = EcdhKem<C, EcRaw2Encoder<C>>;
 
 
+impl<C, E> Kem for EcdhKem<C,E>
+where C: Sync + Send,
+    C: CurveArithmetic+PointCompression,
+    C::FieldBytesSize: ModulusSize,
+    C::AffinePoint: FromSec1Point<C> + ToSec1Point<C>,
+    E: EcEncode<C> + Sync + Send + 'static,
+{
+    type EncapsulationKey = EcdhEncapsulator<C,E>;
+    type DecapsulationKey = EcdhDecapsulator<C,E>;
+    type CiphertextSize = E::PublicKeyLen;
+    type SharedKeySize = E::SharedSecretLen;
 
-// Wrapper structure for making different RNG traits interoperable
-mod wrapper {
-    
-    use elliptic_curve::rand_core::{TryCryptoRng, TryRng}; //, TryRngCore};
-
-    // RSA uses an new version of Rng. Wrap it so we can use the same Encapsulator trait
-    pub struct RngWrapper<'a, R: super::CryptoRngCore> {
-        core: &'a mut R,
-    }
-    impl<'a, R: super::CryptoRngCore> From<&'a mut R> for RngWrapper<'a, R> {
-        fn from(v: &'a mut R) -> Self {
-            Self { core: v}
-        }
-    }
-
-    impl<'a, R: super::CryptoRngCore> TryCryptoRng for RngWrapper<'a, R> {}
-
-    impl<'a, R: super::CryptoRngCore> TryRng for RngWrapper<'a, R> {
-        type Error = elliptic_curve::Error;
-        
-        fn try_next_u32(&mut self) -> Result<u32, Self::Error> {
-            Ok(self.core.next_u32())
-        }
-        
-        fn try_next_u64(&mut self) -> Result<u64, Self::Error> {
-            Ok(self.core.next_u64())
-        }
-        
-        fn try_fill_bytes(&mut self, dst: &mut [u8]) -> Result<(), Self::Error> {
-            Ok(self.core.fill_bytes(dst))
-        }
+    fn generate_keypair_from_rng<R: rand::prelude::CryptoRng>(rng: &mut R ) -> (DecapsulationKey<Self>, EncapsulationKey<Self>)
+    {
+        let private = SecretKey::try_generate_from_rng(rng).unwrap();
+        let public = private.public_key();
+        (EcdhDecapsulator::from_key(private), EcdhEncapsulator::from_key(public))
     }
 }
+
+
+
+impl<C,E> FromSeed for EcdhKem<C,E>
+where C: Sync + Send,
+    C: CurveArithmetic+PointCompression,
+    C::FieldBytesSize: ModulusSize,
+    C::AffinePoint: FromSec1Point<C> + ToSec1Point<C>,
+    E: EcEncode<C> + Sync + Send + 'static,
+{
+    type SeedSize = C::FieldBytesSize;
+
+    fn from_seed(seed: &Seed<Self>) -> (DecapsulationKey<Self>, EncapsulationKey<Self>) 
+    {    
+        let Ok(priv_key) = SecretKey::from_bytes(seed) else { panic!("DFSDFSD") };
+        let decapsulator = Self::DecapsulationKey::from_key(priv_key);
+        let encapsulator = decapsulator.encapsulation_key().clone();
+        (decapsulator, encapsulator)
+    }
+}
+
+
+
+impl<C, DE> Ord for EcdhKem<C,DE>
+{
+    fn cmp(&self, _other: &Self) -> std::cmp::Ordering {
+        todo!()
+    }
+}
+impl<C, DE> PartialOrd for EcdhKem<C,DE>
+{
+    fn partial_cmp(&self, _other: &Self) -> Option<std::cmp::Ordering> {
+        todo!()
+    }
+}
+impl<C, DE> PartialEq for EcdhKem<C,DE>
+{
+    fn eq(&self, _other: &Self) -> bool {
+        todo!()
+    }
+}
+impl<C, DE> Eq for EcdhKem<C,DE>
+{
+}
+impl<C, DE> Default for EcdhKem<C,DE>
+{
+    fn default() -> Self {
+        Self(Default::default(), Default::default())
+    }
+}
+impl<C, DE> Debug for EcdhKem<C,DE>
+{
+    fn fmt(&self, _f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        todo!()
+    }
+}
+impl<C, DE> Copy for EcdhKem<C,DE>
+{
+}
+impl<C, DE> Clone for EcdhKem<C,DE>
+{
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+
+
+
+
+
+
+
+
+
 
 
 
@@ -343,208 +350,75 @@ mod wrapper {
 /// Allows for the encapsulation of a key using Elliptic-Curve Diffie-Hellman
 /// 
 
-pub struct EcdhEncapsulator <C: CurveArithmetic+PointCompression, ED, S,G>
+pub struct EcdhEncapsulator <C: CurveArithmetic+PointCompression, E>
 {
     pub recipient_public: PublicKey<C>,
-    _phantom2: PhantomData<S>,
-    _phantom5: PhantomData<ED>,
-    _phantom6: PhantomData<G>,
+    phantom: PhantomData<E>,
 }
 
 /// Encapsulation key used for elliptic curve Diffie Hellman based KEM with SEC1 compressed encoding of the ciphertext
-pub type EcdhEncapsulatorCompressed<C,G> = EcdhEncapsulator<C, EcCompressedEncoder<C>, EcXonlyEncoder<C>, G>;
+pub type EcdhEncapsulatorCompressed<C> = EcdhEncapsulator<C, EcCompressedEncoder<C>>;
 /// Encapsulation key used for elliptic curve Diffie Hellman based KEM with SEC1 uncompressed encoding of the ciphertext
-pub type EcdhEncapsulatorUncompressed<C,G> = EcdhEncapsulator<C, EcUncompressedEncoder<C>, EcXonlyEncoder<C>, G>;
+pub type EcdhEncapsulatorUncompressed<C> = EcdhEncapsulator<C, EcUncompressedEncoder<C>>;
 /// Encapsulation key used for elliptic curve Diffie Hellman based KEM with raw encoding of the ciphertext and keys.
 /// Points are encoded as x followed by y, where each field is a sequence of big endian bytes 
-pub type EcdhEncapsulatorRaw<C,G> = EcdhEncapsulator<C, EcRawEncoder<C>, EcXonlyEncoder<C>, G>;
+pub type EcdhEncapsulatorRaw<C> = EcdhEncapsulator<C, EcRawEncoder<C>>;
 
 
 
-impl<C: CurveArithmetic+PointCompression, ED, S, G> KeySizeUser for EcdhEncapsulator<C,ED, S, G>
-where ED: DecodeSlice<PublicKey<C>> + EncodeGenericArray<PublicKey<C>>,
-    <ED as DecodeSlice<PublicKey<C>>>::Error: Debug,
-    ED::EncodedLen: ArraySize,
+impl<C: CurveArithmetic+PointCompression, E> KeySizeUser for EcdhEncapsulator<C,E>
+where E: EcEncode<C>,
 {
-    type KeySize = ED::EncodedLen;
+    type KeySize = E::PublicKeyLen;
 }
 
-impl<C: CurveArithmetic+PointCompression, ED, S, G> KeyExport for EcdhEncapsulator<C,ED, S, G>
-where ED: DecodeSlice<PublicKey<C>> + EncodeGenericArray<PublicKey<C>>,
-    <ED as DecodeSlice<PublicKey<C>>>::Error: Debug,
-    ED::EncodedLen: ArraySize,
+impl<C: CurveArithmetic+PointCompression, E> KeyExport for EcdhEncapsulator<C,E>
+where E: EcEncode<C>,
 {
     fn to_bytes(&self) -> cipher::Key<Self> {
-        ED::encode(&self.recipient_public).into()
-        //Array::from(*self.recipient_public.as_bytes())
+        E::encode_public_key(&self.recipient_public).into()
     }
 }
 
-impl<C: CurveArithmetic+PointCompression, ED, S, G> KeyInit for EcdhEncapsulator<C,ED, S, G>
-where ED: DecodeSlice<PublicKey<C>> + EncodeGenericArray<PublicKey<C>>,
-    <ED as DecodeSlice<PublicKey<C>>>::Error: Debug,
-    ED::EncodedLen: ArraySize,
+impl<C, E> TryKeyInit for EcdhEncapsulator<C,E>
+where C: CurveArithmetic + PointCompression,
+    E: EcEncode<C>,
 {
-    fn new(key: &cipher::Key<Self>) -> Self {
-        let recipient_public = ED::decode(key).unwrap();
-        Self::from_key(recipient_public)
+    fn new(key: &cipher::Key<Self>) -> Result<Self, InvalidKey> {
+        E::decode_public_key(key).map_err(|_|InvalidKey).map(|k|Self::from_key(k))
     }
 }
 
-
-impl<C: CurveArithmetic+PointCompression, ED, S, G> TryFrom<&[u8]> for EcdhEncapsulator<C,ED, S, G>
-where ED: DecodeSlice<PublicKey<C>> + EncodeGenericArray<PublicKey<C>>,
-    <ED as DecodeSlice<PublicKey<C>>>::Error: Debug,
-    ED::EncodedLen: ArraySize,
-{
-    type Error = TryFromSliceError;
-
-    fn try_from(value: &[u8]) -> Result<Self, Self::Error> {
-        let key = value.try_into()?;
-        Ok(KeyInit::new(key))
-    }
-}
-
-
-// impl<C: CurveArithmetic+PointCompression, ED, S, G> EncodedSizeUser2 for EcdhEncapsulator<C,ED, S, G>
-// where ED: DecodeSlice<PublicKey<C>> + EncodeGenericArray<PublicKey<C>>,
-//     <ED as DecodeSlice<PublicKey<C>>>::Error: Debug
-// {
-//     type EncodedSize = ED::EncodedLen;
-//     fn as_bytes(&self) -> crate::Encoded<Self> {
-//         ED::encode(&self.recipient_public)
-//     }
-//     fn from_bytes(enc: &crate::Encoded<Self>) -> Self {
-//         let recipient_public = ED::decode(enc).unwrap();
-//         //Self { recipient_public, _phantom2: PhantomData, _phantom5: PhantomData, _phantom6: PhantomData}
-//         Self::from_key(recipient_public)
-//     }
-// }
-
-impl<C,DE,S,G> FromKey for EcdhEncapsulator<C,DE,S,G> 
-where   C: CurveArithmetic+PointCompression, 
+impl<C,E> FromKey for EcdhEncapsulator<C,E> 
+where   C: CurveArithmetic + PointCompression, 
 {
     type Key = PublicKey<C>;
     fn from_key(value: PublicKey<C>) -> Self {
-        EcdhEncapsulator { _phantom2: PhantomData, _phantom5: PhantomData, recipient_public: value, _phantom6: PhantomData }
+        EcdhEncapsulator {  recipient_public: value, phantom: PhantomData }
     }
 }
 
 
-impl<C: CurveArithmetic+PointCompression, ED, S, G> EcdhEncapsulator <C, ED, S, G>
+impl<C: CurveArithmetic+PointCompression, E> EcdhEncapsulator <C, E>
 where   C: CurveArithmetic + PointCompression,
         C::AffinePoint: ToSec1Point<C> + FromSec1Point<C>,
         FieldBytesSize<C>: ModulusSize,
-        ED: EncodeGenericArray<PublicKey<C>> , //+ Decode<PublicKey<C>>,
-        //S: SecretPointToBytes<C>,
-        S: EncodeHybridArray<AffinePoint<C>>
+        E: EcEncode<C>,
 {
-    fn encapsulate_deterministic_key(&self, ephemeral_prv: &SecretKey<C> ) -> Result<(GenericArray<u8,ED::EncodedLen>, Array<u8,<S as EncodeHybridArray<AffinePoint<C>>>::EncodedLen>), ()> {
+    fn encapsulate_deterministic_key(&self, ephemeral_prv: &SecretKey<C> ) -> Result<(Array<u8,E::PublicKeyLen>, Array<u8,E::SharedSecretLen>), ()> {
         
-        //let ephemeral_prv = elliptic_curve::SecretKey::<C>::from_slice(&seed).map_err(|_|())?;
         let ephemeral_pub = ephemeral_prv.public_key();
         
         // perform the diffie-hellman action by multiplying the public and private keys
         let raw_shared_secret = self.recipient_public.to_projective() * *ephemeral_prv.to_nonzero_scalar();
         let raw_shared_secret = elliptic_curve::group::Curve::to_affine(&raw_shared_secret);
         
-        let raw_encoded_shared_secret = S::encode(&raw_shared_secret);
+        let raw_encoded_shared_secret = E::encode_shared_secret(&raw_shared_secret);
         
-        Ok((ED::encode(&ephemeral_pub), raw_encoded_shared_secret))
+        Ok((E::encode_public_key(&ephemeral_pub), raw_encoded_shared_secret))
     }
 }
 
-
-impl<C: CurveArithmetic+PointCompression, ED, S, G> Encapsulate<GenericArray<u8,ED::EncodedLen>, Array<u8,<S as EncodeHybridArray<AffinePoint<C>>>::EncodedLen>> for EcdhEncapsulator <C, ED, S, G>
-where   C: CurveArithmetic + PointCompression,
-        C::AffinePoint: ToSec1Point<C> + FromSec1Point<C>,
-        FieldBytesSize<C>: ModulusSize,
-        ED: EncodeGenericArray<PublicKey<C>> + DecodeSlice<PublicKey<C>>,
-        //S: SecretPointToBytes<C>,
-        S: EncodeHybridArray<AffinePoint<C>>,
-{
-    type Error = ();
-    fn encapsulate(&self, rng: &mut impl CryptoRngCore ) -> Result<(GenericArray<u8,ED::EncodedLen>, Array<u8,<S as EncodeHybridArray<AffinePoint<C>>>::EncodedLen>), Self::Error> {
-        
-        let mut bytes = Array::default();
-        rng.try_fill_bytes(bytes.as_mut_slice()).unwrap();
-
-        let mut ephemeral_prv = SecretKey::<C>::from_bytes(&bytes);
-
-        // Ugly, but it kind of works to ensure the random scalar is smaller than the modulus
-        if ephemeral_prv.is_err()
-        {
-            bytes[0] &= 0x01;
-            ephemeral_prv = SecretKey::<C>::from_bytes(&bytes);
-        }
-        self.encapsulate_deterministic_key(&ephemeral_prv.unwrap())
-        // //let ephemeral_prv = elliptic_curve::SecretKey::<C>::from_slice(&seed).map_err(|_|())?;
-        // let ephemeral_pub = ephemeral_prv.as_ref().unwrap().public_key();
-        
-        // // perform the diffie-hellman action by multiplying the public and private keys
-        // let raw_shared_secret = self.recipient_public.to_projective() * *ephemeral_prv.unwrap().to_nonzero_scalar();
-        // let raw_shared_secret = elliptic_curve::group::Curve::to_affine(&raw_shared_secret);
-        
-        // //let raw_shared_secret2 = raw_shared_secret.to_encoded_point(false);
-        // let raw_shared_secret2 = S::encode(&raw_shared_secret);
-        
-        // //let derived_shared_secret = self.kdf.combine::<L>(&raw_shared_secret.x(), raw_shared_secret2.y().unwrap(), &ED::encode(&ephemeral_prv.public_key()), &ED::encode(&self.recipient_public));
-        // Ok((ED::encode(&ephemeral_pub), raw_shared_secret2))
-    }
-}
-
-impl<C: CurveArithmetic+PointCompression, ED, S, G> EncapsulateDeterministic2<GenericArray<u8,ED::EncodedLen>, Array<u8,<S as EncodeHybridArray<AffinePoint<C>>>::EncodedLen>> for EcdhEncapsulator <C, ED, S, G>
-where   C: CurveArithmetic + PointCompression,
-        C::AffinePoint: ToSec1Point<C> + FromSec1Point<C>,
-        FieldBytesSize<C>: ModulusSize,
-        ED: EncodeGenericArray<PublicKey<C>> + DecodeSlice<PublicKey<C>>,
-        //S: SecretPointToBytes<C>,
-        S: EncodeHybridArray<AffinePoint<C>>,
-        G: GenerateDeterministic2<SecretKey<C>>,
-{
-    type Error = ();
-    type SeedSize = G::SeedSize;
-    fn encapsulate_deterministic(&self, seed: &[u8] ) -> Result<(GenericArray<u8,ED::EncodedLen>, Array<u8,<S as EncodeHybridArray<AffinePoint<C>>>::EncodedLen>), Self::Error> {
-        let Ok(ephemeral_prv) = G::generate_deterministic2(seed) else { return Err(())};
-        self.encapsulate_deterministic_key(&ephemeral_prv)
-        // let mut ephemeral_prv = SecretKey::<C>::from_bytes(seed);
-
-        // // Ugly, but it kind of works to ensure the random scalar is smaller than the modulus
-        // if ephemeral_prv.is_err()
-        // {
-        //     let mut seed = seed.clone();
-        //     seed[0] &= 0x01;
-        //     ephemeral_prv = SecretKey::<C>::from_bytes(&seed);
-        // }
-        // //let ephemeral_prv = elliptic_curve::SecretKey::<C>::from_slice(&seed).map_err(|_|())?;
-        // let ephemeral_pub = ephemeral_prv.as_ref().unwrap().public_key();
-        
-        // // perform the diffie-hellman action by multiplying the public and private keys
-        // let raw_shared_secret = self.recipient_public.to_projective() * *ephemeral_prv.unwrap().to_nonzero_scalar();
-        // let raw_shared_secret = elliptic_curve::group::Curve::to_affine(&raw_shared_secret);
-        
-        // //let raw_shared_secret2 = raw_shared_secret.to_encoded_point(false);
-        // let raw_shared_secret2 = S::encode(&raw_shared_secret);
-        
-        // //let derived_shared_secret = self.kdf.combine::<L>(&raw_shared_secret.x(), raw_shared_secret2.y().unwrap(), &ED::encode(&ephemeral_prv.public_key()), &ED::encode(&self.recipient_public));
-        // Ok((ED::encode(&ephemeral_pub), raw_shared_secret2))
-    }
-}
-
-
-impl<C: CurveArithmetic+PointCompression, ED, S, G> GetRecipientPublicKeyBytes for EcdhEncapsulator <C, ED, S, G>
-where   C: CurveArithmetic + PointCompression,
-        C::AffinePoint: ToSec1Point<C> + FromSec1Point<C>,
-        FieldBytesSize<C>: ModulusSize,
-        ED: EncodeGenericArray<PublicKey<C>> + DecodeSlice<PublicKey<C>>,
-{
-    type EncodedLen = ED::EncodedLen;
-
-    //fn get_recipient_public_key_bytes(&self) -> GenericArray<u8, Self::EncodedLen> {
-    fn get_recipient_public_key_bytes<'a>(&'a self) -> Cow<'a, [u8]> {
-        ED::encode(&self.recipient_public).to_vec().into()
-    }
-}
 
 
 
@@ -556,68 +430,38 @@ where   C: CurveArithmetic + PointCompression,
 /// with Elliptic Curves implementing the RustCryoto CurveArithmetic traits
 /// 
 //pub struct EcdhAuthCapsulator<C,K,L,DE> (PhantomData<C>, PhantomData<K>, PhantomData<L>, PhantomData<DE>);
-pub struct EcdhAuthCapsulator<C,DE,G> (PhantomData<C>, PhantomData<DE>, PhantomData<G>);
+pub struct EcdhAuthCapsulator<C,E> (PhantomData<C>, PhantomData<E>);
 
-impl<C, DE, G> Capsulator for EcdhAuthCapsulator<C,DE, G>
-where 
-    DE: EncodeGenericArray<PublicKey<C>> + DecodeSlice<PublicKey<C>> + DecodeSlice<SecretKey<C>> + EncodeGenericArray<SecretKey<C>>, 
-    <DE as EncodeGenericArray<PublicKey<C>>>::EncodedLen: ArraySize,  
-    C: CurveArithmetic+PointCompression,
-    C::FieldBytesSize: ModulusSize,
-    C::AffinePoint: ToSec1Point<C> + FromSec1Point<C>, 
-    <C::FieldBytesSize as Add>::Output: ArraySize,
-{
-    type Encapsulator = EcdhAuthEncapsulator<C,DE,G>;
-    type Decapsulator = EcdhAuthDecapsulator<C,DE>;
-    type CiphertextSize = <DE as EncodeGenericArray<PublicKey<C>>>::EncodedLen;
-    type SharedKeySize = Sum<C::FieldBytesSize, C::FieldBytesSize>;
-
-    fn generate_from_rng ( _rng: &mut impl CryptoRngCore ) -> (Self::Encapsulator, Self::Decapsulator) {
-        todo!()
-    }
-}
-
-
-impl<C, DE, G> EcdhAuthCapsulator<C,DE,G>
-where DE: EncodeGenericArray<PublicKey<C>> + DecodeSlice<PublicKey<C>> + DecodeSlice<SecretKey<C>> + EncodeGenericArray<SecretKey<C>>, 
+impl<C, DE> EcdhAuthCapsulator<C,DE>
+where DE: EcEncode<C>, // + DecodeKey<SecretKey<C>> + EncodeKey<SecretKey<C>>, 
     C: CurveArithmetic+PointCompression, 
     C::FieldBytesSize: ModulusSize,
     C::AffinePoint: ToSec1Point<C> + FromSec1Point<C>, 
-    <DE as EncodeGenericArray<PublicKey<C>>>::EncodedLen: ArraySize,  
-    <DE as DecodeSlice<PublicKey<C>>>::Error: Debug,
-    <DE as DecodeSlice<SecretKey<C>>>::Error: Debug,
 {    
-    pub fn from_bytes_decap ( priv_bytes: &GenericArray::<u8, <DE as EncodeGenericArray<SecretKey<C>>>::EncodedLen>, 
-        pub_bytes: &GenericArray<u8, <DE as EncodeGenericArray<PublicKey<C>>>::EncodedLen> ) -> EcdhAuthDecapsulator<C, DE>
+    pub fn from_bytes_decap ( priv_bytes: &Array::<u8, C::FieldBytesSize>, pub_bytes: &Array<u8, <DE as EcEncode<C>>::PublicKeyLen> ) -> EcdhAuthDecapsulator<C, DE>
     {
-        let priv_key = <DE as DecodeSlice<SecretKey<C>>>::decode(priv_bytes).unwrap();
-        let pub_key = <DE as DecodeSlice<PublicKey<C>>>::decode(pub_bytes).unwrap();
-
-        EcdhAuthDecapsulator{ recipient_private: priv_key, sender_public: pub_key, phantom: PhantomData }
+        let priv_key = SecretKey::<C>::from_bytes(priv_bytes).unwrap(); //<DE as DecodeKey<SecretKey<C>>>::decode(priv_bytes).unwrap();
+        let pub_key = <DE as EcEncode<C>>::decode_public_key(pub_bytes).unwrap();
+        EcdhAuthDecapsulator::from_keys(pub_key, priv_key)
     }
     pub fn decap_from_keys ( recipient_private:SecretKey<C>, sender_public:PublicKey<C> ) -> EcdhAuthDecapsulator<C, DE>
     {
-        EcdhAuthDecapsulator { recipient_private, sender_public, phantom: PhantomData}
+        EcdhAuthDecapsulator::from_keys(sender_public, recipient_private)
     }
-    pub fn encap_from_keys ( recipient_public:PublicKey<C>, sender_private:SecretKey<C> ) -> EcdhAuthEncapsulator<C, DE,G>
+    pub fn encap_from_keys ( recipient_public:PublicKey<C>, sender_private:SecretKey<C> ) -> EcdhAuthEncapsulator<C, DE>
     {
-        EcdhAuthEncapsulator { recipient_public, sender_private, _phantom5: PhantomData, _phantom6: PhantomData}
+        EcdhAuthEncapsulator::from_keys(recipient_public, sender_private)
     }
 }
 
 
 
 /// Authenticated KEM based upon Elliptic Curve Diffie Hellman with SEC1 compressed encoding of the ciphertext
-pub type EcdhAuthCapsulatorCompressed<C,G> = EcdhAuthCapsulator<C, EcCompressedEncoder<C>, G>;
+pub type EcdhAuthKemCompressed<C> = EcdhAuthCapsulator<C, EcCompressedEncoder<C>>;
 /// Authenticated KEM based upon Elliptic Curve Diffie Hellman with SEC1 uncompressed encoding of the ciphertext
-pub type EcdhAuthCapsulatorUncompressed<C,G> = EcdhAuthCapsulator<C, EcUncompressedEncoder<C>,G>;
-
-pub type EcdhAuthCapsulatorRaw<C,G> = EcdhAuthCapsulator<C, EcRawEncoder<C>,G>;
-
-
-
-
-
+pub type EcdhAuthKemUncompressed<C> = EcdhAuthCapsulator<C, EcUncompressedEncoder<C>>;
+/// Authenticated KEM based upon Elliptic Curve Diffie Hellman with raw x||y encoding of the ciphertext
+pub type EcdhAuthKemRaw<C> = EcdhAuthCapsulator<C, EcRawEncoder<C>>;
 
 
 
@@ -625,125 +469,45 @@ pub type EcdhAuthCapsulatorRaw<C,G> = EcdhAuthCapsulator<C, EcRawEncoder<C>,G>;
 /// Struct for creating authenticating encapsulated keys using diffie-hellman
 /// 
 //pub struct EcdhAuthEncapsulator <C: CurveArithmetic+PointCompression, K: EcdhAuthCombiner, L: ArrayLength<u8>, DE>
-pub struct EcdhAuthEncapsulator <C: CurveArithmetic+PointCompression, DE,G>
+pub struct EcdhAuthEncapsulator <C: CurveArithmetic+PointCompression, DE>
 {
     recipient_public: PublicKey<C>,
-    sender_private: SecretKey<C>,
-    _phantom5: PhantomData<DE>,
-    _phantom6: PhantomData<G>,
+    sender_private: Option<SecretKey<C>>,
+    sender_public: PublicKey<C>,
+    phantom: PhantomData<DE>,
 }
 
 /// Specialization of EcdhAuthEncapsulator using a compressed form of public key and without public keys being used in the key derivation function
-pub type EcdhAuthEncapsulatorCompressed<C,G> = EcdhAuthEncapsulator<C,EcCompressedEncoder<C>,G>;
+//pub type EcdhAuthEncapsulatorCompressed<C> = EcdhAuthEncapsulator<C,EcCompressedEncoder<C>>;
 /// Specialization of EcdhAuthEncapsulator using an uncompressed form of public key and without public keys being used in the key derivation function
-pub type EcdhAuthEncapsulatorUncompressed<C,G> = EcdhAuthEncapsulator<C,EcUncompressedEncoder<C>,G>;
+pub type EcdhAuthEncapsulatorUncompressed<C> = EcdhAuthEncapsulator<C,EcUncompressedEncoder<C>>;
 
 
-impl<C,DE,G> FromKeys for EcdhAuthEncapsulator<C,DE,G> 
+impl<C,DE> FromKeys for EcdhAuthEncapsulator<C,DE> 
 where   C: CurveArithmetic+PointCompression,
 {
     type PrivateKey = SecretKey<C>;
     type PublicKey = PublicKey<C>;
 
     fn from_keys ( pub_key: Self::PublicKey, priv_key: Self::PrivateKey ) -> Self {
-        Self { sender_private: priv_key, recipient_public: pub_key, _phantom5: PhantomData, _phantom6: PhantomData}
+        let sender_public = PublicKey::from(&priv_key);
+        Self { sender_private: Some(priv_key), sender_public, recipient_public: pub_key, phantom: PhantomData}
     }
 }
 
 
-impl<C,DE,G> Encapsulate<GenericArray<u8,DE::EncodedLen>, Array<u8,Sum<C::FieldBytesSize, C::FieldBytesSize>>> for EcdhAuthEncapsulator<C,DE,G>
-where   //FieldBytesSize<C>: ModulusSize,
-        DE: EncodeGenericArray<PublicKey<C>> + DecodeSlice<PublicKey<C>>,
-        C: CurveArithmetic + PointCompression,
-        <C::FieldBytesSize as Add>::Output: ArraySize
-{
-    type Error = ();
-
-    fn encapsulate(&self, rng: &mut impl CryptoRngCore) -> Result<(GenericArray<u8,DE::EncodedLen>, Array<u8,Sum<C::FieldBytesSize,C::FieldBytesSize>>), Self::Error> 
-    {
-        // let mut rng = wrapper::RngWrapper::from(rng);
-
-        // let ephemeral_prv = elliptic_curve::SecretKey::<C>::try_from_rng(&mut rng).map_err(|_|())?;
-        let mut seed = Array::default();
-        rng.fill_bytes(&mut seed);
-
-        //let ephemeral_prv = elliptic_curve::SecretKey::<C>::try_from_rng(&mut rng).map_err(|_|())?;
-        let ephemeral_prv = SecretKey::<C>::from_bytes(&seed).map_err(|_|())?;
-        self.encapsulate_from_key(&ephemeral_prv)
-
-        // let encoded_ephemeral_public_key = DE::encode(&ephemeral_prv.public_key());
-        // let public_point = self.recipient_public.to_projective();
-
-        // let raw_shared_secret_1 = public_point * *ephemeral_prv.to_nonzero_scalar();
-        // let raw_shared_secret_2 = public_point * *self.sender_private.to_nonzero_scalar();
-        
-        // let raw_shared_secret_1 = elliptic_curve::group::Curve::to_affine(&raw_shared_secret_1);
-        // let raw_shared_secret_2 = elliptic_curve::group::Curve::to_affine(&raw_shared_secret_2);
-        
-        // //let derived_shared_secret = self.kdf.combine(&raw_shared_secret_1.x(), &raw_shared_secret_2.x(), &DE::encode(&ephemeral_prv.public_key()), &DE::encode(&self.recipient_public), &DE::encode(&self.sender_private.public_key()));
-        // let raw_shared_secret_1: Array<u8, C::FieldBytesSize> = raw_shared_secret_1.x();
-        // let raw_shared_secret_2: Array<u8, C::FieldBytesSize> = raw_shared_secret_2.x();
-        // // let mut raw_shared_secret: Array<u8, Sum<C::FieldBytesSize, C::FieldBytesSize>> = Array::default(); //raw_shared_secret_1.concat(raw_shared_secret_2);
-        // // raw_shared_secret[..C::FieldBytesSize::USIZE].copy_from_slice(&raw_shared_secret_1);
-        // // raw_shared_secret[C::FieldBytesSize::USIZE..].copy_from_slice(&raw_shared_secret_2);
-        // let raw_shared_secret = raw_shared_secret_1.concat(raw_shared_secret_2);
-
-        // Ok((encoded_ephemeral_public_key, raw_shared_secret))
-    }
-}
-
-
-
-
-
-impl<C,DE,G> EncapsulateDeterministic2<GenericArray<u8,DE::EncodedLen>, Array<u8,Sum<C::FieldBytesSize, C::FieldBytesSize>>> for EcdhAuthEncapsulator<C,DE,G>
-where   //FieldBytesSize<C>: ModulusSize,
-        DE: EncodeGenericArray<PublicKey<C>> + DecodeSlice<PublicKey<C>>,
-        C: CurveArithmetic + PointCompression,
-        <C::FieldBytesSize as Add>::Output: ArraySize,
-        G: GenerateDeterministic2<SecretKey<C>>,
-{
-    type Error = ();
-    type SeedSize = C::FieldBytesSize;
-    fn encapsulate_deterministic(&self, seed: &[u8]) -> Result<(GenericArray<u8,DE::EncodedLen>, Array<u8,Sum<C::FieldBytesSize, C::FieldBytesSize>>), Self::Error>
-    {
-        // let Ok(seed) = Array::try_from(seed) else { return Err(())};
-        // let ephemeral_prv = SecretKey::<C>::from_bytes(&seed).map_err(|_|())?;
-        let Ok(ephemeral_prv) = G::generate_deterministic2(seed) else { return Err(())};
-        self.encapsulate_from_key ( &ephemeral_prv )
-
-        // let encoded_ephemeral_public_key = DE::encode(&ephemeral_prv.public_key());
-        // let public_point = self.recipient_public.to_projective();
-
-        // let raw_shared_secret_1 = public_point * *ephemeral_prv.to_nonzero_scalar();
-        // let raw_shared_secret_2 = public_point * *self.sender_private.to_nonzero_scalar();
-        
-        // let raw_shared_secret_1 = elliptic_curve::group::Curve::to_affine(&raw_shared_secret_1);
-        // let raw_shared_secret_2 = elliptic_curve::group::Curve::to_affine(&raw_shared_secret_2);
-        
-        // let raw_shared_secret_1: Array<u8, C::FieldBytesSize> = raw_shared_secret_1.x();
-        // let raw_shared_secret_2: Array<u8, C::FieldBytesSize> = raw_shared_secret_2.x();
-        // let raw_shared_secret = raw_shared_secret_1.concat(raw_shared_secret_2);
-
-        // Ok((encoded_ephemeral_public_key, raw_shared_secret))
-    }
-}
-
-
-impl<C,DE,G> EcdhAuthEncapsulator<C,DE,G>
-where   //FieldBytesSize<C>: ModulusSize,
-        DE: EncodeGenericArray<PublicKey<C>> + DecodeSlice<PublicKey<C>>,
+impl<C,E> EcdhAuthEncapsulator<C,E>
+where   E: EcEncode<C>,
         C: CurveArithmetic + PointCompression,
         <C::FieldBytesSize as Add>::Output: ArraySize,
 {
-    
-    fn encapsulate_from_key(&self, ephemeral_prv: &SecretKey<C>) -> Result<(GenericArray<u8,DE::EncodedLen>, Array<u8,Sum<C::FieldBytesSize, C::FieldBytesSize>>), ()>
+    fn encapsulate_from_key(&self, ephemeral_prv: &SecretKey<C>) -> Result<(Array<u8,E::PublicKeyLen>, Array<u8,Sum<C::FieldBytesSize, C::FieldBytesSize>>), ()>
     {
-        let encoded_ephemeral_public_key = DE::encode(&ephemeral_prv.public_key());
+        let encoded_ephemeral_public_key = E::encode_public_key(&ephemeral_prv.public_key());
         let public_point = self.recipient_public.to_projective();
 
         let raw_shared_secret_1 = public_point * *ephemeral_prv.to_nonzero_scalar();
-        let raw_shared_secret_2 = public_point * *self.sender_private.to_nonzero_scalar();
+        let raw_shared_secret_2 = public_point * *self.sender_private.as_ref().unwrap().to_nonzero_scalar();
         
         let raw_shared_secret_1 = elliptic_curve::group::Curve::to_affine(&raw_shared_secret_1);
         let raw_shared_secret_2 = elliptic_curve::group::Curve::to_affine(&raw_shared_secret_2);
@@ -755,38 +519,6 @@ where   //FieldBytesSize<C>: ModulusSize,
         Ok((encoded_ephemeral_public_key, raw_shared_secret))
     }
 }
-
-
-
-
-
-
-
-
-
-
-impl<C,DE,G> GetSenderPublicKeyBytes for EcdhAuthEncapsulator<C,DE,G>
-where C: CurveArithmetic + PointCompression,
-    DE: EncodeGenericArray<PublicKey<C>> + DecodeSlice<PublicKey<C>>,
-{
-    type EncodedLen = <DE as EncodeGenericArray<PublicKey<C>>>::EncodedLen;
-
-    fn get_sender_public_key_bytes(&self) -> GenericArray<u8, Self::EncodedLen> {
-        DE::encode(&self.sender_private.public_key())
-    }
-}
-impl<C,DE,G> GetRecipientPublicKeyBytes for EcdhAuthEncapsulator<C,DE,G>
-where C: CurveArithmetic + PointCompression,
-    DE: EncodeGenericArray<PublicKey<C>> + DecodeSlice<PublicKey<C>>,
-{
-    type EncodedLen = <DE as EncodeGenericArray<PublicKey<C>>>::EncodedLen;
-    //fn get_recipient_public_key_bytes(&self) -> GenericArray<u8, Self::EncodedLen> {
-    fn get_recipient_public_key_bytes<'a>(&'a self) -> Cow<'a, [u8]> {
-        DE::encode(&self.recipient_public).to_vec().into()
-    }
-}
-
-
 
 
 
@@ -810,280 +542,91 @@ where C: CurveArithmetic + PointCompression,
 ///
 /// Struct enabling receipt of a EciesEncapKey and recovery of the shared secret
 /// 
-pub struct EcdhDecapsulator <C: CurveArithmetic+PointCompression, ED, S, G>
+pub struct EcdhDecapsulator <C: CurveArithmetic+PointCompression, E>
 {
     pub recipient_private: SecretKey<C>,
-    phantom: PhantomData<S>,
-    phantom1: PhantomData<ED>,
-    phantom2: PhantomData<G>
+    encapsulation_key: EcdhEncapsulator<C,E>,
+    phantom: PhantomData<E>,
 }
 
 
-impl<C: CurveArithmetic + PointCompression, DE, S, G> FromKey for EcdhDecapsulator<C,DE,S,G> {
+impl<C: CurveArithmetic + PointCompression, DE> FromKey for EcdhDecapsulator<C,DE> {
     type Key = SecretKey<C>;
     /// Create a Decapsulator from a private key and kdf, which must match the recipient public key and kdf used 
     /// during the encapsulation phase
-    fn from_key (private: SecretKey<C>) -> Self {
-        Self { recipient_private: private, phantom: PhantomData, phantom1: PhantomData, phantom2: PhantomData }
+    fn from_key (recipient_private: SecretKey<C>) -> Self {
+        let encapsulation_key = EcdhEncapsulator{ recipient_public: recipient_private.public_key(), phantom: PhantomData };
+        Self { recipient_private, encapsulation_key, phantom: PhantomData }
     }
 }
 
 
 
 /// Encapsulation key used for elliptic curve Diffie Hellman based KEM with SEC1 compressed encoding of the ciphertext
-pub type EcdhDecapsulatorCompressed<C,G> = EcdhDecapsulator<C, EcCompressedEncoder<C>, EcXonlyEncoder<C>,G>;
+pub type EcdhDecapsulatorCompressed<C> = EcdhDecapsulator<C, EcCompressedEncoder<C>>;
 /// Encapsulation key used for elliptic curve Diffie Hellman based KEM with SEC1 uncompressed encoding of the ciphertext
-pub type EcdhDecapsulatorUncompressed<C,G> = EcdhDecapsulator<C, EcUncompressedEncoder<C>, EcXonlyEncoder<C>,G>;
+pub type EcdhDecapsulatorUncompressed<C> = EcdhDecapsulator<C, EcUncompressedEncoder<C>>;
 /// Encapsulation key used for elliptic curve Diffie Hellman based KEM with raw encoding of the ciphertext and keys.
 /// Raw encoding means the private key is a sequence of big endian bytes representing the scalar
 /// Points are encoded as x followed by y, where each field is a sequence of big endian bytes 
-pub type EcdhDecapsulatorRaw<C,G> = EcdhDecapsulator<C,EcRawEncoder<C>, EcXonlyEncoder<C>,G>;
+pub type EcdhDecapsulatorRaw<C> = EcdhDecapsulator<C,EcRawEncoder<C>>;
 
 
-
-impl<C, ED, S,G> Decapsulate<GenericArray<u8, ED::EncodedLen>, Array<u8, S::EncodedLen>> for EcdhDecapsulator<C,ED,S,G>
-where 
-    ED: EncodeGenericArray<PublicKey<C>> + DecodeSlice<PublicKey<C>>,
-    <ED as DecodeSlice<PublicKey<C>>>::Error: Debug,
-    C: CurveArithmetic+PointCompression,
-    C::FieldBytesSize: ModulusSize,
-    C::AffinePoint: ToSec1Point<C>,
-    //S: SecretPointToBytes<C>,
-    S: EncodeHybridArray<AffinePoint<C>>,
+impl<C, E> KeySizeUser for EcdhDecapsulator<C,E>
+where C: CurveArithmetic+PointCompression,
 {
-    type Error = <ED as DecodeSlice<PublicKey<C>>>::Error;
-    fn decapsulate(&self, encapsulated_key: &GenericArray<u8, ED::EncodedLen>) -> Result<Array<u8, S::EncodedLen>, Self::Error> {
-        let encapped_key = ED::decode(&encapsulated_key)?;
-
-        let public_point = ProjectivePoint::<C>::from(*encapped_key.as_affine());
-        
-        let raw_shared_secret = public_point * *self.recipient_private.to_nonzero_scalar();
-        let raw_shared_secret = elliptic_curve::group::Curve::to_affine(&raw_shared_secret);
-
-        Ok(S::encode(&raw_shared_secret))
-    }
+    type KeySize = C::FieldBytesSize;
 }
 
-
-impl<C, ED, S, G> KeySizeUser for EcdhDecapsulator<C,ED,S,G>
+impl<C, ED> KeyExport for EcdhDecapsulator<C,ED>
 where C: CurveArithmetic+PointCompression,
-    ED: DecodeSlice<SecretKey<C>> + EncodeGenericArray<SecretKey<C>>,
-    //<ED as DecodeSlice<SecretKey<C>>>::Error: std::fmt::Debug,
-    //C::FieldBytesSize: ArrayLength, //<u8>,
-    ED::EncodedLen: ArraySize
-{
-    type KeySize = ED::EncodedLen;
-}
-
-impl<C, ED, S, G> KeyExport for EcdhDecapsulator<C,ED,S,G>
-where C: CurveArithmetic+PointCompression,
-    ED: DecodeSlice<SecretKey<C>> + EncodeGenericArray<SecretKey<C>>,
-    //<ED as DecodeSlice<SecretKey<C>>>::Error: std::fmt::Debug,
-    C::FieldBytesSize: ArrayLength, //<u8>,
-    ED::EncodedLen: ArraySize
 {
     fn to_bytes(&self) -> cipher::Key<Self> {
-        ED::encode(&self.recipient_private).into()
-        //Array::from(*self.recipient_public.as_bytes())
+        self.recipient_private.to_bytes()
     }
 }
-impl<C, ED, S, G> KeyInit for EcdhDecapsulator<C,ED,S,G>
-where C: CurveArithmetic+PointCompression,
-    ED: DecodeSlice<SecretKey<C>> + EncodeGenericArray<SecretKey<C>>,
-    <ED as DecodeSlice<SecretKey<C>>>::Error: std::fmt::Debug,
-    C::FieldBytesSize: ArrayLength, //<u8>,
-    ED::EncodedLen: ArraySize
+impl<C, E> TryKeyInit for EcdhDecapsulator<C,E>
+where C: CurveArithmetic+PointCompression + AssociatedOid + Curve + ValidatePublicKey,
+    FieldBytesSize<C>: ModulusSize,
 {
-    fn new(key: &cipher::Key<Self>) -> Self {
-        let secret_key = ED::decode(key).unwrap();
-        Self::from_key(secret_key)
+    fn new(key: &cipher::Key<Self>) -> Result<EcdhDecapsulator<C, E>, InvalidKey> {
+        let secret_key = SecretKey::<C>::from_bytes(key).map_err(|_|InvalidKey)?;
+        Ok(Self::from_key(secret_key))
     }
-}
-
-impl<C, ED, S, G> GenerateDeterministic4 for EcdhDecapsulator<C,ED,S,G>
-where C: CurveArithmetic + PointCompression,
-    G: GenerateDeterministic2<SecretKey<C>>
-{
-    type SeedSize = G::SeedSize;
-    type Error = ();
-
-    fn generate_deterministic(seed: &Array::<u8, Self::SeedSize>) -> Result<Self, Self::Error> where Self: Sized {
-        let Ok(private) = G::generate_deterministic2(seed) else { panic! ( "unable to generate")};
-        Ok(Self::from_key(private))
-    }
-}
-
-
-
-
-// impl<C, ED, S, G> EncodedSizeUser2 for EcdhDecapsulator<C,ED,S,G>
-// where C: CurveArithmetic+PointCompression,
-//     ED: DecodeSlice<SecretKey<C>> + EncodeGenericArray<SecretKey<C>>,
-//     <ED as DecodeSlice<SecretKey<C>>>::Error: std::fmt::Debug,
-//     C::FieldBytesSize: ArrayLength, //<u8>,
-// {
-//     type EncodedSize = C::FieldBytesSize;
-//     fn as_bytes(&self) -> crate::Encoded<Self> {
-//         GenericArray::from_slice(self.recipient_private.clone().to_bytes().as_slice()).clone()
-//     }
-//     fn from_bytes(encoded_key: &crate::Encoded<Self>) -> Self {
-//         let secret_key = ED::decode(encoded_key).unwrap();
-//         //Self { recipient_private: secret_key, phantom: PhantomData, phantom1: PhantomData, phantom2: PhantomData}
-//         Self::from_key(secret_key)
-//     }
-// }
-
-impl<C: CurveArithmetic+PointCompression, ED, S, G> TryFrom<&[u8]> for EcdhDecapsulator<C,ED, S, G>
-where C: AssociatedOid + Curve + ValidatePublicKey,
-        FieldBytesSize<C>: ModulusSize,
-{
-    type Error = elliptic_curve::Error;
-    fn try_from(value: &[u8]) -> Result<Self, Self::Error> {
-        //let recipient_public = rsa::RsaPublicKey::from_pkcs1_der(&value)?;
-        println! ( "value={:02?}", value.len());
-        let recipient_private = if value.len() == C::FieldBytesSize::USIZE
+    fn new_from_slice(key: &[u8]) -> Result<Self, InvalidKey> {
+        let recipient_private = if key.len() == C::FieldBytesSize::USIZE
         {
-            SecretKey::<C>::from_slice(value).unwrap()
+            SecretKey::<C>::from_slice(key).unwrap()
         }
         else {
-            SecretKey::<C>::from_sec1_der(value).unwrap()
+            SecretKey::<C>::from_sec1_der(key).unwrap()
         };
-        //let recipient_private = SecretKey::<C>::from_sec1_der(value).unwrap();
-        //let recipient_private = SecretKey::<C>::from_slice(value).unwrap();
-        //Ok(Self { sender_public, phantom2: PhantomData, phantom1: PhantomData, /*phantom4: PhantomData,*/ phantom3: PhantomData})
-        Ok(Self{recipient_private, phantom: PhantomData, phantom1: PhantomData, phantom2: PhantomData})
+        let encapsulation_key = EcdhEncapsulator::<C,E>{recipient_public: recipient_private.public_key(), phantom: PhantomData};
+        Ok(Self{recipient_private, encapsulation_key,phantom: PhantomData})
     }
 }
 
-// impl<C, ED, S, G> EncodeGenericArraySelf for EcdhDecapsulator<C,ED,S,G>
-// where C: CurveArithmetic+PointCompression,
-//     ED: Decode<SecretKey<C>> + EncodeGenericArray<SecretKey<C>>,
-//     C::FieldBytesSize: ArrayLength<u8>,
-// {
-//     type EncodedLen = C::FieldBytesSize;
-    
-//     fn encode(&self) -> GenericArray<u8, Self::EncodedLen> {
-//         GenericArray::from_slice(self.recipient_private.to_bytes().as_slice()).clone()
-//     }
-// }
-
-// impl<C, ED, S, G> DecodeGenericArray<Self> for EcdhDecapsulator<C,ED,S,G>
-// where C: CurveArithmetic+PointCompression,
-//     ED: Decode<SecretKey<C>> + EncodeGenericArray<SecretKey<C>>,
-//     <ED as Decode<SecretKey<C>>>::Error: std::fmt::Debug,
-//     C::FieldBytesSize: ArrayLength<u8>,
-// {
-//     type Error = ();
-//     type EncodedLen = C::FieldBytesSize;
-
-//     fn decode(encoded_bytes: &GenericArray<u8, Self::EncodedLen>) -> Result<Self, Self::Error> {
-//         let secret_key = ED::decode(encoded_bytes).unwrap();
-//         Ok(Self::from_key(secret_key))
-//     }
-// }
-
-
-impl<C: CurveArithmetic+PointCompression, ED, S, G> crate::GetEncapsulator for EcdhDecapsulator<C,ED,S,G>
-where ED: EncodeGenericArray<PublicKey<C>> + DecodeSlice<PublicKey<C>>,
-    <ED as EncodeGenericArray<PublicKey<C>>>::EncodedLen: ArraySize,
-{
-    type Encapsulator = EcdhEncapsulator<C, ED, S,G>;
-    fn encapsulation_key(&self) -> Self::Encapsulator {
-        let public_key = self.recipient_private.public_key();
-        //Self::Encapsulator { recipient_public: public_key, _phantom2: PhantomData, _phantom5: PhantomData, _phantom6: PhantomData}
-        Self::Encapsulator::from_key(public_key)
-    }
-}
-
-impl<C: CurveArithmetic+PointCompression, ED, S,G> GetRecipientPublicKeyBytes for EcdhDecapsulator<C,ED,S,G>
-where ED: EncodeGenericArray<PublicKey<C>> + DecodeSlice<PublicKey<C>>,
-    <ED as EncodeGenericArray<PublicKey<C>>>::EncodedLen: ArraySize,
-{
-    type EncodedLen = ED::EncodedLen;
-
-    //fn get_recipient_public_key_bytes(&self) -> GenericArray<u8, Self::EncodedLen> {
-    fn get_recipient_public_key_bytes<'a>(&'a self) -> Cow<'a, [u8]> {
-        ED::encode(&self.recipient_private.public_key()).to_vec().into()
-    }
-}
 
 
 ///
 /// Struct enabling receipt of a EciesEncapKey and recovery of the shared secret
 /// 
-pub struct EcdhAuthDecapsulator <C: CurveArithmetic+PointCompression, DE>
+pub struct EcdhAuthDecapsulator <C: CurveArithmetic+PointCompression, E>
 {
     recipient_private: SecretKey<C>,
-    sender_public: PublicKey<C>,
-    phantom: PhantomData<DE>,
+    encapsulation_key: EcdhAuthEncapsulator<C,E>,
 }
 
-impl<C: CurveArithmetic + PointCompression, DE> FromKeys for EcdhAuthDecapsulator<C, DE>
+impl<C: CurveArithmetic + PointCompression, E> FromKeys for EcdhAuthDecapsulator<C, E>
 {
     type PrivateKey = SecretKey<C>;
     type PublicKey = PublicKey<C>;
 
     fn from_keys ( pub_key: Self::PublicKey, priv_key: Self::PrivateKey ) -> Self {
-        Self { recipient_private: priv_key, sender_public: pub_key, phantom: PhantomData}
+        let recipient_public = PublicKey::from(&priv_key);
+        Self { recipient_private: priv_key, encapsulation_key: EcdhAuthEncapsulator { recipient_public, sender_private: None, sender_public: pub_key, phantom: PhantomData }}
     }
 }
-
-impl<C,DE> Decapsulate<GenericArray<u8, DE::EncodedLen>, Array<u8, Sum<C::FieldBytesSize, C::FieldBytesSize>>> for EcdhAuthDecapsulator<C,DE> 
-where   C: CurveArithmetic + PointCompression,
-        C::FieldBytesSize: ModulusSize,
-        C::AffinePoint: FromSec1Point<C> + ToSec1Point<C>,
-        DE: EncodeGenericArray<PublicKey<C>>,
-        DE::EncodedLen: ArraySize,
-        <C::FieldBytesSize as Add>::Output: ArraySize,
-{
-    type Error = elliptic_curve::Error;
-
-    fn decapsulate(&self, encapsulated_key: &GenericArray<u8, DE::EncodedLen>) -> Result<Array<u8, Sum<C::FieldBytesSize, C::FieldBytesSize>>, Self::Error> {
-
-        let encapped_key = PublicKey::<C>::from_sec1_bytes(&encapsulated_key)?;
-        let public_point_1 = ProjectivePoint::<C>::from(*encapped_key.as_affine());
-        let public_point_2 = ProjectivePoint::<C>::from(*self.sender_public.as_affine());
-
-        let raw_shared_secret_1 = public_point_1 * *self.recipient_private.to_nonzero_scalar();
-        let raw_shared_secret_2 = public_point_2 * *self.recipient_private.to_nonzero_scalar();
-        
-        let raw_shared_secret_1 = elliptic_curve::group::Curve::to_affine(&raw_shared_secret_1).x();
-        let raw_shared_secret_2 = elliptic_curve::group::Curve::to_affine(&raw_shared_secret_2).x();
-
-        let raw_shared_secret = raw_shared_secret_1.concat::<C::FieldBytesSize>(raw_shared_secret_2);
-        Ok(raw_shared_secret)
-    }
-}
-
-
-
-impl<C: CurveArithmetic + PointCompression, DE> GetSenderPublicKeyBytes for EcdhAuthDecapsulator<C, DE>
-where DE: EncodeGenericArray<PublicKey<C>>
-{
-    type EncodedLen = DE::EncodedLen;
-
-    fn get_sender_public_key_bytes(&self) -> GenericArray<u8, Self::EncodedLen> {
-        DE::encode(&self.sender_public)
-    }
-}
-impl<C: CurveArithmetic + PointCompression, DE> GetRecipientPublicKeyBytes for EcdhAuthDecapsulator<C, DE>
-where DE: EncodeGenericArray<PublicKey<C>>
-{
-    type EncodedLen = DE::EncodedLen;
-
-    //fn get_recipient_public_key_bytes(&self) -> GenericArray<u8, Self::EncodedLen> {
-    fn get_recipient_public_key_bytes<'a>(&'a self) -> Cow<'a, [u8]> {
-        DE::encode(&self.recipient_private.public_key()).to_vec().into()
-    }
-}
-
-
-
-
-
-
-
-
 
 
 ///
@@ -1091,46 +634,23 @@ where DE: EncodeGenericArray<PublicKey<C>>
 /// with Elliptic Curves implementing the RustCryoto CurveArithmetic traits
 /// 
 //pub struct EcMqvAuthCapsulator<C,K,L,ED> (PhantomData<C>, PhantomData<K>, PhantomData<L>, PhantomData<ED>);
-pub struct EcMqvAuthCapsulator<C,ED> (PhantomData<C>, PhantomData<ED>);
+pub struct EcMqvAuthKem<C,ED> (PhantomData<C>, PhantomData<ED>);
 
 /// Authenticed KEM using Elliptic Curve MQV and compressed SEC1 encoding for the ciphertext 
-pub type EcMqvAuthCapsulatorCompressed<C> = EcMqvAuthCapsulator<C, EcCompressedEncoder<C>>;
+pub type EcMqvAuthKemCompressed<C> = EcMqvAuthKem<C, EcCompressedEncoder<C>>;
 /// Authenticed KEM using Elliptic Curve MQV and uncompressed SEC1 encoding for the ciphertext
-pub type EcMqvAuthCapsulatorUncompressed<C> = EcMqvAuthCapsulator<C, EcUncompressedEncoder<C>>;
-
-
-//impl<C, K, L, DE> Capsulator for EcMqvAuthCapsulator<C,K,L,DE>
-impl<C, DE> Capsulator for EcMqvAuthCapsulator<C,DE>
-where 
-    DE: EncodeGenericArray<PublicKey<C>> + DecodeSlice<PublicKey<C>> + DecodeSlice<SecretKey<C>> + EncodeGenericArray<SecretKey<C>>, 
-    <DE as EncodeGenericArray<PublicKey<C>>>::EncodedLen: ArraySize,  
-    C: CurveArithmetic+PointCompression + PrimeCurve,
-    C::FieldBytesSize: ModulusSize,
-    C::AffinePoint: ToSec1Point<C> + FromSec1Point<C>,    
-{
-    type Encapsulator = EcMqvAuthEncapsulator<C,DE>;
-    type Decapsulator = EcMqvAuthDecapsulator<C,DE>;
-    type CiphertextSize = <DE as EncodeGenericArray<PublicKey<C>>>::EncodedLen;
-    type SharedKeySize = C::FieldBytesSize;
-
-    fn generate_from_rng ( _rng: &mut impl CryptoRngCore ) -> (Self::Encapsulator, Self::Decapsulator) {
-        todo!()
-    }
-}
-
-
-
-
+pub type EcMqvAuthKemUncompressed<C> = EcMqvAuthKem<C, EcUncompressedEncoder<C>>;
 
 
 ///
 /// Struct for creating authenticated encapsulated keys using the MQV primitive
 /// 
-pub struct EcMqvAuthEncapsulator <C: CurveArithmetic+PointCompression, DE>
+pub struct EcMqvAuthEncapsulator <C: CurveArithmetic+PointCompression, E>
 {
-    sender_private: SecretKey<C>,
+    sender_private: Option<SecretKey<C>>,
+    sender_public: PublicKey<C>,
     recipient_public: PublicKey<C>,
-    phantom: PhantomData<DE>
+    phantom: PhantomData<E>
 }
 
 /// Encapsulator using the MQV primitive and a compressed public key in the output
@@ -1140,92 +660,17 @@ pub type EcMqvAuthEncapsulatorUncompressed<C> = EcMqvAuthEncapsulator<C, EcUncom
 
 
 //impl<C,K,L,E,DE> FromKeys for EcMqvAuthEncapsulator<C,K,L,E,DE>
-impl<C,DE> FromKeys for EcMqvAuthEncapsulator<C,DE>
+impl<C,E> FromKeys for EcMqvAuthEncapsulator<C,E>
 where   C: CurveArithmetic+PointCompression, 
 {
     type PrivateKey = SecretKey<C>;
     type PublicKey = PublicKey<C>;
 
     fn from_keys ( recipient_public: Self::PublicKey, sender_private: Self::PrivateKey ) -> Self {
-        Self { sender_private, recipient_public, phantom: PhantomData }
+        let sender_public = PublicKey::from(&sender_private);
+        Self { sender_private: Some(sender_private), recipient_public, sender_public, phantom: PhantomData }
     }
 }
-
-
-
-impl<C,DE> Encapsulate<GenericArray<u8,DE::EncodedLen>, Array<u8,C::FieldBytesSize>> for EcMqvAuthEncapsulator<C,DE>
-where   C: CurveArithmetic + PointCompression + PrimeCurve,
-        C::AffinePoint: ToSec1Point<C> + FromSec1Point<C>,
-        FieldBytesSize<C>: ModulusSize,
-        DE: EncodeGenericArray<PublicKey<C>>,
-{
-    type Error = TryFromSliceError;
-
-    fn encapsulate(&self, rng: &mut impl CryptoRngCore) -> Result<(GenericArray<u8,DE::EncodedLen>, Array<u8,C::FieldBytesSize>), Self::Error> {
-        
-        let mut seed = Array::default();
-        rng.fill_bytes(&mut seed);
-
-        let ephemeral_prv = SecretKey::<C>::from_bytes(&seed).unwrap();
-        let ephemeral_pub = ephemeral_prv.public_key();
-
-        let raw_shared_secret = mqv2 ( &self.sender_private, &ephemeral_prv, &self.recipient_public, &self.recipient_public);
-        let raw_shared_secret = elliptic_curve::group::Curve::to_affine(&raw_shared_secret);
-        
-        let encapsulated_key = DE::encode(&ephemeral_pub);
-
-        Ok((encapsulated_key, raw_shared_secret.x()))
-    }
-}
-
-impl<C,DE> EncapsulateDeterministic2<GenericArray<u8,DE::EncodedLen>, Array<u8,C::FieldBytesSize>> for EcMqvAuthEncapsulator<C,DE>
-where   C: CurveArithmetic + PointCompression + PrimeCurve,
-        C::AffinePoint: ToSec1Point<C> + FromSec1Point<C>,
-        FieldBytesSize<C>: ModulusSize,
-        DE: EncodeGenericArray<PublicKey<C>>,
-{
-    type Error = TryFromSliceError;
-    type SeedSize = C::FieldBytesSize;
-
-    fn encapsulate_deterministic(&self, seed: &[u8]) -> Result<(GenericArray<u8,DE::EncodedLen>, Array<u8,C::FieldBytesSize>), Self::Error> {
-        let seed = Array::try_from(seed)?;
-        let ephemeral_prv = SecretKey::<C>::from_bytes(&seed).unwrap();
-        let ephemeral_pub = ephemeral_prv.public_key();
-
-        let raw_shared_secret = mqv2 ( &self.sender_private, &ephemeral_prv, &self.recipient_public, &self.recipient_public);
-        let raw_shared_secret = elliptic_curve::group::Curve::to_affine(&raw_shared_secret);
-        
-        let encapsulated_key = DE::encode(&ephemeral_pub);
-
-        Ok((encapsulated_key, raw_shared_secret.x()))
-    }
-}
-
-
-
-
-impl<C,DE> GetSenderPublicKeyBytes for EcMqvAuthEncapsulator<C,DE>
-where C: CurveArithmetic + PointCompression,
-    DE: EncodeGenericArray<PublicKey<C>> + DecodeSlice<PublicKey<C>>,
-{
-    type EncodedLen = <DE as EncodeGenericArray<PublicKey<C>>>::EncodedLen;
-
-    fn get_sender_public_key_bytes(&self) -> GenericArray<u8, Self::EncodedLen> {
-        DE::encode(&self.sender_private.public_key())
-    }
-}
-impl<C,DE> GetRecipientPublicKeyBytes for EcMqvAuthEncapsulator<C,DE>
-where C: CurveArithmetic + PointCompression,
-    DE: EncodeGenericArray<PublicKey<C>> + DecodeSlice<PublicKey<C>>,
-{
-    type EncodedLen = <DE as EncodeGenericArray<PublicKey<C>>>::EncodedLen;
-    //fn get_recipient_public_key_bytes(&self) -> GenericArray<u8, Self::EncodedLen> {
-    fn get_recipient_public_key_bytes<'a>(&'a self) -> Cow<'a, [u8]> {
-        DE::encode(&self.recipient_public).to_vec().into()
-    }
-}
-
-
 
 
 
@@ -1233,60 +678,20 @@ where C: CurveArithmetic + PointCompression,
 ///
 /// Struct enabling receipt of a EciesEncapKey and recovery of the shared secret
 /// 
-pub struct EcMqvAuthDecapsulator <C: CurveArithmetic+PointCompression, ED>
+pub struct EcMqvAuthDecapsulator <C: CurveArithmetic+PointCompression, E>
 {
     recipient_private: SecretKey<C>,
-    sender_public: PublicKey<C>,
-    phantom: PhantomData<ED>
+    encapsulation_key: EcMqvAuthEncapsulator<C, E>,
 }
 
-impl<C: CurveArithmetic + PointCompression, DE> FromKeys for EcMqvAuthDecapsulator<C,DE> 
+impl<C: CurveArithmetic + PointCompression, E> FromKeys for EcMqvAuthDecapsulator<C,E> 
 {
     type PrivateKey = SecretKey<C>;
     type PublicKey = PublicKey<C>;
     
     fn from_keys ( sender_public: Self::PublicKey, recipient_private: Self::PrivateKey ) -> Self {
-        Self { recipient_private, sender_public, phantom: PhantomData }
-    }
-}
-
-
-impl<'a, C,DE> Decapsulate<GenericArray<u8, DE::EncodedLen>, Array<u8, C::FieldBytesSize>> for EcMqvAuthDecapsulator<C,DE> 
-where   C: CurveArithmetic + PointCompression + PrimeCurve,
-        C::FieldBytesSize: ModulusSize,
-        C::AffinePoint: FromSec1Point<C> + ToSec1Point<C>,
-        //DE: EncodePublicKey<PublicKey<C>>,
-        DE: EncodeGenericArray<PublicKey<C>>,
-{
-    type Error = elliptic_curve::Error;
-
-    fn decapsulate(&self, encapsulated_key: &GenericArray<u8, DE::EncodedLen>) -> Result<Array<u8, C::FieldBytesSize>, Self::Error> {
-        let encapped_key = PublicKey::<C>::from_sec1_bytes(&encapsulated_key.as_slice())?;
-        
-        let raw_shared_secret = elliptic_curve::group::Curve::to_affine(&mqv2 ( &self.recipient_private, &self.recipient_private, &self.sender_public, &encapped_key ));
-        Ok(raw_shared_secret.x())
-    }
-}
-
-
-impl<C,DE> GetSenderPublicKeyBytes for EcMqvAuthDecapsulator<C,DE>
-where C: CurveArithmetic + PointCompression,
-    DE: EncodeGenericArray<PublicKey<C>> + DecodeSlice<PublicKey<C>>,
-{
-    type EncodedLen = <DE as EncodeGenericArray<PublicKey<C>>>::EncodedLen;
-
-    fn get_sender_public_key_bytes(&self) -> GenericArray<u8, Self::EncodedLen> {
-        DE::encode(&self.sender_public)
-    }
-}
-impl<C,DE> GetRecipientPublicKeyBytes for EcMqvAuthDecapsulator<C,DE>
-where C: CurveArithmetic + PointCompression,
-    DE: EncodeGenericArray<PublicKey<C>> + DecodeSlice<PublicKey<C>>,
-{
-    type EncodedLen = <DE as EncodeGenericArray<PublicKey<C>>>::EncodedLen;
-    //fn get_recipient_public_key_bytes(&self) -> GenericArray<u8, Self::EncodedLen> {
-    fn get_recipient_public_key_bytes<'a>(&'a self) -> Cow<'a,[u8]> {
-        DE::encode(&self.recipient_private.public_key()).to_vec().into()
+        let recipient_public = PublicKey::from(&recipient_private);
+        Self { recipient_private, encapsulation_key: EcMqvAuthEncapsulator { sender_private: None, recipient_public, sender_public, phantom: PhantomData } }
     }
 }
 
@@ -1351,1091 +756,62 @@ pub fn  mqv2<C> ( sk1: &SecretKey<C>, sk2: &SecretKey<C>, pk1: &PublicKey<C>, pk
     let temp_66: Scalar<C> = temp_6.into();
 
     let p = ( pk2.to_projective() + pk1.to_projective() * temp_66) * implicit_sig_ab;
-
     p
 }
 
 
-///
-/// Factory struct to create encapsulators and decapsulators using one-way Diffie-Hellman
-/// with Elliptic Curves implementing the RustCryoto CurveArithmetic traits
-/// 
-pub struct EcdhKem<C,DE,G = SeedAsScalar, S=EcXonlyEncoder<C>> (PhantomData<C>, PhantomData<DE>, PhantomData<G>, PhantomData<S>);
-
-/// Unauthenticated KEM using elliptic curve diffie Hellman and SEC1 compressed encoding of the ciphertext
-pub type EcdhKemCompressed<C,G> = EcdhKem<C, EcCompressedEncoder<C>, G, EcXonlyEncoder<C>>;
-pub type EcdhKemCompressed2<C> = EcdhKem<C, EcCompressedEncoder<C>, SeedAsScalar, EcXonlyEncoder<C>>;
-
-/// Unauthenticated KEM using elliptic curve diffie Hellman and SEC1 uncompressed encoding of the ciphertext
-pub type EcdhKemUncompressed<C,G> = EcdhKem<C, EcUncompressedEncoder<C>, G, EcXonlyEncoder<C>>;
-
-/// Unauthenticated KEM using elliptic curve diffie Hellman and x-only encoding of the ciphertext
-pub type EcdhKemCompact<C,G> = EcdhKem<C, EcXonlyEncoder<C>, G, EcXonlyEncoder<C>>;
 
 
-pub type EcdhKemRaw<C,G> = EcdhKem<C, EcRawEncoder<C>, G, EcXonlyEncoder<C>>;
 
 
-impl<C, DE,G, S> Capsulator for EcdhKem<C,DE,G, S>
-where 
-    C: CurveArithmetic+PointCompression,
-    C::FieldBytesSize: ModulusSize,
-    C::AffinePoint: FromSec1Point<C> + ToSec1Point<C>,
+impl<C, E> Eq for EcdhEncapsulator<C,E>
+where C: CurveArithmetic+PointCompression,
+{
+
+}
+impl<C, E> PartialEq for EcdhEncapsulator<C,E>
+where C: CurveArithmetic+PointCompression,
+{
+    fn eq(&self, _other: &Self) -> bool {
+        todo!()
+    }
     
-    DE: EncodeGenericArray<PublicKey<C>> + DecodeSlice<PublicKey<C>> + DecodeSlice<SecretKey<C>> + EncodeGenericArray<SecretKey<C>>, 
-    <DE as EncodeGenericArray<PublicKey<C>>>::EncodedLen: ArraySize,    
-    <DE as DecodeSlice<PublicKey<C>>>::Error: Debug,
-    //S: SecretPointToBytes<C>,
-    S: EncodeHybridArray<AffinePoint<C>>
+}
+impl<C, E> Debug for EcdhEncapsulator<C,E>
+where C: CurveArithmetic+PointCompression,
 {
-    type Encapsulator = EcdhEncapsulator<C,DE,S,G>;
-    type Decapsulator = EcdhDecapsulator<C,DE,S,G>;
-    type CiphertextSize = <DE as EncodeGenericArray<PublicKey<C>>>::EncodedLen;
-    type SharedKeySize = <S as EncodeHybridArray<AffinePoint<C>>>::EncodedLen;
-    
-    fn generate_from_rng ( rng: &mut impl CryptoRngCore ) -> (Self::Encapsulator, Self::Decapsulator) {
-        let mut rng = wrapper::RngWrapper::from(rng);
-
-        let private = SecretKey::try_generate_from_rng(&mut rng).unwrap();
-        let public = private.public_key();
-        (EcdhEncapsulator::from_key(public), EcdhDecapsulator::from_key(private))
+    fn fmt(&self, _f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        todo!()
     }
 }
-
-
-impl<C,DE,G,S> GenerateDeterministic3 for EcdhKem<C,DE, G, S>
-where 
-    C: CurveArithmetic + PointCompression,
-    C::FieldBytesSize: ModulusSize + ArraySize,
-    C::AffinePoint: FromSec1Point<C> + ToSec1Point<C>,
-    DE: EncodeGenericArray<PublicKey<C>> + DecodeSlice<PublicKey<C>> + DecodeSlice<SecretKey<C>> + EncodeGenericArray<SecretKey<C>>, 
-    <DE as EncodeGenericArray<PublicKey<C>>>::EncodedLen: ArraySize,    
-    <DE as DecodeSlice<PublicKey<C>>>::Error: Debug,
-    G: GenerateDeterministic2<SecretKey<C>>,
-    //S: SecretPointToBytes<C>,
-    S: EncodeHybridArray<AffinePoint<C>>
+impl<C, E> Clone for EcdhEncapsulator<C,E>
+where C: CurveArithmetic+PointCompression,
 {
-    type SeedSize = G::SeedSize;
-    type Public = EcdhEncapsulator<C,DE,S,G>;
-    type Private = EcdhDecapsulator<C,DE,S,G>;
-    type Error = ();
-    fn generate_deterministic(ikm: &Array::<u8, Self::SeedSize>) -> Result<(Self::Public, Self::Private), Self::Error> {
-        let Ok(sk) = G::generate_deterministic2(ikm) else { panic! ( "Derived failed")};
-        Ok((EcdhEncapsulator::from_key(sk.public_key()), EcdhDecapsulator::from_key(sk)))
+    fn clone(&self) -> Self {
+        Self { recipient_public: self.recipient_public.clone(), phantom: PhantomData }
     }
 }
-
-/// 
-/// Implementation of the derive key pair from draft-ietf-hpke-pq-01
-/// This method is described in SEC1 and also listed in FIPS 186-5 as rejection sampling.
-/// 
-#[derive(Debug, Default, std::cmp::Ord, std::cmp::PartialEq, std::cmp::PartialOrd, std::cmp::Eq, Copy, Clone)]
-pub struct SeedAsScalar ();
-
-impl<C> GenerateDeterministic2<SecretKey<C>> for SeedAsScalar 
-where C: Curve + CurveArithmetic, 
-        // C::FieldBytesSize: Mul<N>,
-        // <C::FieldBytesSize as Mul<N>>::Output: Sub<C::FieldBytesSize>,
-        // <C::FieldBytesSize as Mul<N>>::Output: ArraySize,
-{
-    type SeedSize = C::FieldBytesSize; //Prod<C::FieldBytesSize, N>;
-    //type PublicKey = PublicKey<C>;
-    //type Private = SecretKey<C>;
-    type Error = ();
-
-    // Seed should be at least Self::SeedSize in length, if seed is longer then it is used if the first part of the seed 
-    // does not generate a suitable key pair.
-    //fn generate_deterministic2( seed: &[u8]) -> Result<(SecretKey<C>, PublicKey<C>), Self::Error> {
-    fn generate_deterministic2( seed: &[u8]) -> Result<SecretKey<C>, Self::Error> {
-        for chunk in seed.chunks(C::FieldBytesSize::USIZE) 
-        {
-            let Ok(candidate) = Array::try_from(chunk) else { continue };
-            let Ok(priv_key) = SecretKey::from_bytes(&candidate) else { continue };
-            return Ok(priv_key)
-        }
-        //panic!( "unable to generate key")       
-        Err(())
-    }
-}
-
-
-
-
-/// Implementation of ScalarFromBytes function from draft-irtf-cfrg-hybrid-kems-03
-/// The scalar is used as the private key
-/// This method is equivalent to 
-/// - 'Extra Random Bits' method from FIPS 186-5, where the number of extra bits is set to the base order / 2
-/// - 
-pub struct ReduceSeed;
-
-#[cfg(feature="rustcrypto-p256")]
-impl GenerateDeterministic2<SecretKey<NistP256>> for ReduceSeed
-{
-    type SeedSize = Sum<<NistP256 as Curve>::FieldBytesSize, Quot<<NistP256 as Curve>::FieldBytesSize, U2>>;
-    //type PublicKey = PublicKey<NistP256>;
-    //type Private = SecretKey<NistP256>;
-    type Error = ();
-
-    //fn derive_keypair_from_seed( seed: &Array::<u8, Self::SeedSize>) -> (SecretKey<NistP256>, PublicKey<NistP256>) {
-    //fn generate_deterministic2( seed: &[u8]) -> Result<(SecretKey<NistP256>, PublicKey<NistP256>), Self::Error> {
-    fn generate_deterministic2( seed: &[u8]) -> Result<SecretKey<NistP256>, Self::Error> {
-        use elliptic_curve::bigint::Uint;
-
-        let Ok(seed_as_array) = Array::try_from(seed) else { return Err(())};
-        let seed_as_bigint = Uint::<{Self::SeedSize::USIZE/8}>::from_be_byte_array(seed_as_array);
-        let mut padded_order2 = Uint::<{Self::SeedSize::USIZE/8}>::default();
-        padded_order2.as_mut_limbs()[..<NistP256 as Curve>::ORDER.as_limbs().len()].copy_from_slice(<NistP256 as Curve>::ORDER.as_limbs());
-        
-        let remainder_bigint = seed_as_bigint.rem(&padded_order2.to_nz().unwrap());
-
-        let remainder_generic_array = remainder_bigint.to_be_byte_array();
-        let (_,rem) = remainder_generic_array.split_at(<NistP256 as Curve>::FieldBytesSize::USIZE/2);
-        
-        let priv_key = SecretKey::from_slice(rem).unwrap();
-        //let pub_key = priv_key.public_key();
-        
-        Ok(priv_key)
-    }
-
-}
-
-#[cfg(feature="rustcrypto-p384")]
-impl GenerateDeterministic2<SecretKey<NistP384>> for ReduceSeed
-{
-    type SeedSize = Sum<<NistP384 as Curve>::FieldBytesSize, Quot<<NistP384 as Curve>::FieldBytesSize, U2>>;
-    //type PublicKey = PublicKey<NistP384>;
-    //type Private = SecretKey<NistP384>;
-    type Error = ();
-
-    //fn derive_keypair_from_seed( seed: &Array::<u8, Self::SeedSize>) -> (SecretKey<NistP384>, PublicKey<NistP384>) {
-    //fn generate_deterministic2( seed: &[u8]) -> Result<(SecretKey<NistP384>, PublicKey<NistP384>), Self::Error> {
-    fn generate_deterministic2( seed: &[u8]) -> Result<SecretKey<NistP384>, Self::Error> {
-        use elliptic_curve::bigint::Uint;
-
-        let Ok(seed_as_array) = Array::try_from(seed) else { return Err(())};
-        let seed_as_bigint = Uint::<{Self::SeedSize::USIZE/8}>::from_be_byte_array(seed_as_array);
-        
-        let mut padded_order2 = Uint::<{Self::SeedSize::USIZE/8}>::default();
-        padded_order2.as_mut_limbs()[..<NistP384 as Curve>::ORDER.as_limbs().len()].copy_from_slice(<NistP384 as Curve>::ORDER.as_limbs());
-
-        let remainder_bigint = seed_as_bigint.rem(&padded_order2.to_nz().unwrap());
-
-        let remainder_generic_array = remainder_bigint.to_be_byte_array();
-        let (_,rem) = remainder_generic_array.split_at(<NistP384 as Curve>::FieldBytesSize::USIZE/2);
-        
-        let priv_key = SecretKey::from_slice(rem).unwrap();
-        //let pub_key = priv_key.public_key();
-        
-        Ok(priv_key)
-    }
-}
-
-
-
-
-//////////////
-// Implementation of KEM traits from ml-kem
-// 
-// 
-
-// impl<C: CurveArithmetic+PointCompression, K: EcdhCombiner, L: ArrayLength<u8>, ED> ml_kem::kem::Encapsulate<hybrid_array::Array<u8,ED::EncodedLen>, hybrid_array::Array<u8,L>> for EcdhEncapsulator <C, K, L, ED>
-// where   C: CurveArithmetic + PointCompression,
-//         K: EcdhCombiner<> + Clone,
-//         L: ArrayLength<u8> + Debug + ArraySize,
-//         <C as CurveArithmetic>::AffinePoint: ToEncodedPoint<C> + FromEncodedPoint<C>,
-//         FieldBytesSize<C>: ModulusSize,
-//         ED: Debug + EncodePublicKey<PublicKey<C>> + DecodePublicKey<elliptic_curve::PublicKey<C>>,
-//         <ED as EncodePublicKey<PublicKey<C>>>::EncodedLen: Debug,
-//         <ED as EncodePublicKey<elliptic_curve::PublicKey<C>>>::EncodedLen: hybrid_array::ArraySize
-// {
-//     type Error = kem::Error;
-//     fn encapsulate(&self, rng: &mut impl rand_core::CryptoRngCore) -> Result<(hybrid_array::Array<u8,ED::EncodedLen>, hybrid_array::Array<u8,L>), Self::Error> {
-//         let (ek, ss) = self.try_encap( rng, &self.key.unwrap() )?;
-//         Ok((hybrid_array::Array::try_from(ek.bytes.as_slice()).unwrap(), hybrid_array::Array::try_from(ss.as_bytes()).unwrap()))
-//     }
-// }
-
-
-
-
-
-
-// impl<C,K,L,ED> ml_kem::KemCore for EcdhKem<C,K,L,ED>
-// where L: ArrayLength<u8> + Debug + hybrid_array::ArraySize + PartialEq,
-//     K: EcdhCombiner + Default + Clone,
-//     C: CurveArithmetic + PointCompression,
-//     <C as CurveArithmetic>::AffinePoint: ToEncodedPoint<C>, 
-//     <C as elliptic_curve::Curve>::FieldBytesSize: ModulusSize,
-//     <C as CurveArithmetic>::AffinePoint: FromEncodedPoint<C>,
-//     ED: Debug + EncodePublicKey<elliptic_curve::PublicKey<C>> + DecodePrivateKey<elliptic_curve::SecretKey<C>> + DecodePublicKey<elliptic_curve::PublicKey<C>>,
-//     <ED as EncodePublicKey<elliptic_curve::PublicKey<C>>>::EncodedLen: Debug,
-//     <ED as EncodePublicKey<elliptic_curve::PublicKey<C>>>::EncodedLen: PartialEq,
-//     <ED as EncodePublicKey<elliptic_curve::PublicKey<C>>>::EncodedLen: hybrid_array::ArraySize
-// {
-//     type CiphertextSize = ED::EncodedLen;
-//     type SharedKeySize = L;
-//     type DecapsulationKey = EcdhDecapsulator<C,K,L,ED>;
-//     type EncapsulationKey = EcdhEncapsulator<C,K,L,ED>;
-
-//     fn generate(rng: &mut impl rand_core::CryptoRngCore) -> (Self::DecapsulationKey, Self::EncapsulationKey) {
-//         let private = elliptic_curve::SecretKey::random(rng);
-//         let public = private.public_key();
-//         (EcdhDecapsulator::new(private), EcdhEncapsulator::from(public))
-//     }
-//     // fn generate_deterministic(_d: &ml_kem::B32, _z: &ml_kem::B32)
-//     //         -> (Self::DecapsulationKey, Self::EncapsulationKey) {
-//     //     todo!();
-//     // }
-// }
-
-// impl<C: CurveArithmetic+PointCompression, K: EcdhCombiner, L: ArrayLength<u8>, ED> ml_kem::EncodedSizeUser for EcdhDecapsulator<C,K,L,ED >
-// where K: EcdhCombiner + Default,
-//     ED: DecodePrivateKey<SecretKey<C>>,
-// {
-//     type EncodedSize = U32;
-//     fn as_bytes(&self) -> ml_kem::Encoded<Self> {
-//         todo!()
-//     }
-//     fn from_bytes(_enc: &ml_kem::Encoded<Self>) -> Self {
-//         // let ga = GenericArray::from_slice(&_enc);
-//         // let secret_key = elliptic_curve::SecretKey::<C>::from_bytes ( &ga ).unwrap();
-//         let secret_key = ED::decode(_enc).unwrap();
-//         Self { kdf: K::default(), private: secret_key, phantom: PhantomData, phantom1: PhantomData}
-//     }
-// }
-
-
-// impl<C: CurveArithmetic+PointCompression, K: EcCombiner, L: ArrayLength<u8>, ED> ml_kem::EncapsulateDeterministic<hybrid_array::Array<u8,ED::EncodedLen>, hybrid_array::Array<u8,L>> for EcdhEncapsulator <C,K, L,ED>
-// where L:ArrayLength<u8> + Debug + ArraySize,
-//     K: EcCombiner,
-//     ED: EncodePublicKey<PublicKey<C>>,
-//     ED::EncodedLen: ArraySize,
-// {
-//     type Error = kem::Error;
-//     fn encapsulate_deterministic(&self, _m: &ml_kem::B32) -> Result<(hybrid_array::Array<u8,ED::EncodedLen>, hybrid_array::Array<u8,L>), Self::Error> {
-//         todo!()
-//     }
-// }
-
-// impl<C: CurveArithmetic + PointCompression, K: MqvAuthCombiner, L: ArrayLength<u8>, DE> PrivateKeyInit<SecretKey<C>> for EcMqvAuthDecapsulator<C,K,L,DE> 
-//     where K: Default
-// {
-//     fn new(private_key: SecretKey<C>) -> Self {
-//         Self { private: private_key, kdf: K::default(), sender_key: None, phantom: PhantomData, phantom2: PhantomData}
-//     }
-// }
-// impl<'a, C,K,L,DE> AuthDecapsulator<EcEncapKey<C,L,DE>> for EcMqvAuthDecapsulator<C,K,L,DE> 
-// where   C: CurveArithmetic + PointCompression + PrimeCurve,
-//         L: ArrayLength<u8> + Debug,
-//         K: MqvAuthCombiner<> + Clone,
-//         <C as Curve>::FieldBytesSize: ModulusSize,
-//         <C as CurveArithmetic>::AffinePoint: FromEncodedPoint<C> + ToEncodedPoint<C>,
-//         DE: Debug+ EncodePublicKey<PublicKey<C>> + DecodePublicKey<elliptic_curve::PublicKey<C>>,
-//         <DE as EncodePublicKey<PublicKey<C>>>::EncodedLen: Debug
-// {
-//     ///
-//     /// Decapsulate the provided Encapsulated key
-//     /// 
-//     fn try_auth_decap(&self, encapped_key: &EcEncapKey<C,L,DE>, sender_static_public_key: &PublicKey<C>) 
-//         -> Result<SharedSecret<EcEncapKey<C,L,DE>>, kem::Error> 
-//     {
-//         use elliptic_curve::group::Curve;
-//         let raw_shared_secret = mqv2 ( &self.private, &self.private, sender_static_public_key, &encapped_key.to_public_key()? ).to_affine();
-//         let processed_shared_secret = self.kdf.combine(&raw_shared_secret.x().as_ref(), &DE::encode(&encapped_key.to_public_key()?), &DE::encode(&self.private.public_key()), &DE::encode(sender_static_public_key));
-//         Ok(SharedSecret::new(processed_shared_secret))
-//     }
-// }
-
-
-// impl<K,L,DE> GenerateCapsulatorFromSeed for EcdhKem<p256::NistP256,K,L,DE, ReduceSeed>
-// where 
-//     K: EcdhCombiner + Default + Clone,
-//     L: ArraySize + ArrayLength<u8>,
-//     DE: EncodePublicKey<elliptic_curve::PublicKey<p256::NistP256>> + DecodePublicKey<elliptic_curve::PublicKey<p256::NistP256>> + DecodePrivateKey<elliptic_curve::SecretKey<p256::NistP256>> + EncodePrivateKey<elliptic_curve::SecretKey<p256::NistP256>>, 
-//     <DE as EncodePublicKey<elliptic_curve::PublicKey<p256::NistP256>>>::EncodedLen: ArraySize,    
-// {
-//     type SeedSize = U48;
-
-//     fn generate_from_seed(seed: &Array::<u8, Self::SeedSize>) -> (Self::Encapsulator, Self::Decapsulator) {
-//         let seed_as_generic_array = GenericArray::<u8,U48>::from_slice(seed);
-//         let seed_as_bigint = elliptic_curve::bigint::U384::from_be_byte_array(*seed_as_generic_array);
-//         let order_as_bigint = p256::NistP256::ORDER;
-//         let order_as_generic_array = order_as_bigint.to_be_byte_array();
-//         // let mut order_vec = [0u8; 16].to_vec();
-//         // order_vec.extend_from_slice(&order_as_generic_array);
-//         let padded_order = GenericArray::<u8,U16>::default().concat(order_as_generic_array);
-        
-//         //let long_order = elliptic_curve::bigint::U384::from_be_byte_array(*GenericArray::from_slice(&order_vec));
-//         let long_order_bigint = elliptic_curve::bigint::U384::from_be_byte_array(padded_order);
-//         let non_zero_order = elliptic_curve::bigint::NonZero::from_uint(long_order_bigint);
-//         let remainder_bigint = seed_as_bigint.rem(&non_zero_order);
-//         let remainder_generic_array = remainder_bigint.to_be_byte_array();
-//         let remainder_small_generic_array = GenericArray::from_slice(&remainder_generic_array[16..48]);
-        
-//         let priv_key = elliptic_curve::SecretKey::from_bytes(remainder_small_generic_array).unwrap();
-//          (EcdhEncapsulator::from_key(priv_key.public_key()), EcdhDecapsulator::from_key(priv_key))
-//     }
-
-// }
-// impl<K,L,DE> GenerateCapsulatorFromSeed for EcdhKem<p384::NistP384,K,L,DE,ReduceSeed>
-// where 
-//     //C: CurveArithmetic+PointCompression,
-//     K: EcdhCombiner + Default + Clone,
-//     // <C as elliptic_curve::Curve>::FieldBytesSize: ModulusSize,
-//     // <C as CurveArithmetic>::AffinePoint: FromEncodedPoint<C>,
-//     // <C as CurveArithmetic>::AffinePoint: ToEncodedPoint<C>,
-//     L: ArraySize + ArrayLength<u8>,
-
-//     DE: EncodePublicKey<elliptic_curve::PublicKey<p384::NistP384>> + DecodePublicKey<elliptic_curve::PublicKey<p384::NistP384>> + DecodePrivateKey<elliptic_curve::SecretKey<p384::NistP384>> + EncodePrivateKey<elliptic_curve::SecretKey<p384::NistP384>>, 
-//     <DE as EncodePublicKey<elliptic_curve::PublicKey<p384::NistP384>>>::EncodedLen: ArraySize,
-// {
-//     type SeedSize = U72;
-
-//     fn generate_from_seed(seed: &Array::<u8, Self::SeedSize>) -> (Self::Encapsulator, Self::Decapsulator) {
-//         let ba = GenericArray::<u8,U72>::from_slice(seed);
-//         let xx = elliptic_curve::bigint::U576::from_be_byte_array(*ba);
-//         let order = p384::NistP384::ORDER;
-//         let yy = order.to_be_byte_array();
-//         let mut order_vec = [0u8; 24].to_vec();
-//         order_vec.extend_from_slice(&yy);
-//         let long_order = elliptic_curve::bigint::U576::from_be_byte_array(*GenericArray::from_slice(&order_vec));
-//         let non_zero_order = elliptic_curve::bigint::NonZero::from_uint(long_order);
-//         let sj = xx.rem(&non_zero_order).to_be_byte_array();
-//         let d = GenericArray::from_slice(&sj[24..72]);
-//         let priv_key = elliptic_curve::SecretKey::from_bytes(d).unwrap();
-//          (EcdhEncapsulator::from_key(priv_key.public_key()), EcdhDecapsulator::from_key(priv_key))
-//     }
-// }
-
-
-
-
-// impl<C: CurveArithmetic+PointCompression, K: EcdhCombiner,L: ArrayLength<u8>, DE>  EcdhKem<C,K,L,DE>
-// where DE: EncodePublicKey<elliptic_curve::PublicKey<C>>,
-//     <C as elliptic_curve::Curve>::FieldBytesSize: ModulusSize,
-//     <C as CurveArithmetic>::AffinePoint: FromEncodedPoint<C>,
-//     <C as CurveArithmetic>::AffinePoint: ToEncodedPoint<C>,
-//     //<DE as EncodePublicKey<elliptic_curve::PublicKey<C>>>::EncodedLen: Debug
-// {
-//     pub fn new_decapsulator_with_params (private: SecretKey<C>, kdf: K) -> EcdhDecapsulator<C,K,L,DE> {
-//         //return EcdhDecapsulator::<C,K,L,DE>::new_with_params (private, kdf);
-//         EcdhDecapsulator { recipient_private: private, kdf: kdf, phantom: PhantomData, phantom1: PhantomData }
-//     }
-//     // pub fn new_encapsulator_with_params ( public: PublicKey<C>, kdf: K) -> EcdhEncapsulator<C,K,L,DE> {
-//     //     return EcdhEncapsulator::<C,K,L,DE>::new_(kdf)
-//     // }
-// }
-
-
-
-// impl<C: CurveArithmetic+PointCompression, K: EcdhAuthCombiner+Default,L: ArrayLength<u8>, DE> AuthCapsulator for EcdhKem<C,K,L,DE>{
-//     type AuthSecretKey = SecretKey<C>;  
-//     type AuthEncapsulator = EcdhAuthEncapsulator<C,K,L,DE>;
-//     type AuthDecapsulator = EcdhAuthDecapsulator<C,K,L,DE>;
-// }
-
-
-
-
-// impl<K,L,DE> GenerateCapsulatorFromSeed for EcdhKem<p256::NistP256,K,L,DE, SeedAsScalar>
-// where 
-//     K: EcdhCombiner + Default + Clone,
-//     L: ArraySize + ArrayLength<u8>,
-
-//     DE: EncodePublicKey<elliptic_curve::PublicKey<p256::NistP256>> + DecodePublicKey<elliptic_curve::PublicKey<p256::NistP256>> + DecodePrivateKey<elliptic_curve::SecretKey<p256::NistP256>> + EncodePrivateKey<elliptic_curve::SecretKey<p256::NistP256>>, 
-//     <DE as EncodePublicKey<elliptic_curve::PublicKey<p256::NistP256>>>::EncodedLen: ArraySize,    
-// {
-//     type SeedSize = U48;
-//     fn generate_from_seed(seed: &Array::<u8, Self::SeedSize>) -> (Self::Encapsulator, Self::Decapsulator) {
-//         let seed2 = &seed[0..32];
-//         let priv_key = elliptic_curve::SecretKey::from_bytes(&GenericArray::from_slice(seed2)).unwrap();
-//         (EcdhEncapsulator::from_key(priv_key.public_key()), EcdhDecapsulator::from_key(priv_key))
-//     }
-// }
-// impl<C: CurveArithmetic + PointCompression, K: EcdhAuthCombiner + Default, L: ArrayLength<u8>, DE: EncodePublicKey<PublicKey<C>>> EncodedSizeUser2 for EcdhAuthDecapsulator<C,K,L, DE> {
-//     type EncodedSize = DE::EncodedLen;
-//     fn as_bytes(&self) -> crate::Encoded<Self> {
-//         todo!()
-//     }
-//     fn from_bytes(enc: &crate::Encoded<Self>) -> Self {
-//         todo!()
-//     }
-// }
-
-// impl<C: CurveArithmetic+PointCompression, K: EcdhCombiner, L: ArrayLength<u8>, ED> std::fmt::Debug for EcdhDecapsulator<C,K,L,ED>
-// {
-//     fn fmt(&self, _f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-//         todo!()
-//     }
-// }
-
-// impl<C: CurveArithmetic+PointCompression, K: EcdhCombiner, L: ArrayLength<u8>, ED> PartialEq for EcdhDecapsulator<C,K,L,ED>
-// {
-//     fn eq(&self, _other: &Self) -> bool {
-//         todo!()
-//     }
-// }
-// impl<C: CurveArithmetic + PointCompression, K: EcdhCombiner, L: ArrayLength<u8>, ED> EcdhDecapsulator<C,K,L,ED> {
-//     /// Create a Decapsulator from a private key and kdf, which must match the recipient public key and kdf used 
-//     /// during the encapsulation phase
-//     pub fn new_with_params (private: SecretKey<C>, kdf: K) -> Self {
-//         EcdhDecapsulator { private, kdf, phantom: PhantomData,phantom1: PhantomData }
-//     }
-// }
-
-// impl<C: CurveArithmetic + PointCompression, K: EcdhCombiner + Default, L: ArrayLength<u8>, DE> From<SecretKey<C>> for EcdhDecapsulator<C,K,L,DE> {
-//     /// Create a Decapsulator from a private key and kdf, which must match the recipient public key and kdf used 
-//     /// during the encapsulation phase
-//     fn from(value: SecretKey<C>) -> Self {
-//         Self { private: value, kdf: K::default(), phantom: PhantomData, phantom1: PhantomData }
-//     }
-// }
-// impl<C,K,L,DE> Decapsulator<EcEncapKey<C,L,DE>> for EcdhDecapsulator<C,K,L,DE> 
-// where   C: CurveArithmetic + PointCompression,
-//         K: EcdhCombiner<> + Clone, //+ OutputSizeUser,
-//         L: ArrayLength<u8> + Debug,
-//         <C as Curve>::FieldBytesSize: ModulusSize,
-//         <C as CurveArithmetic>::AffinePoint: FromEncodedPoint<C> + ToEncodedPoint<C>,
-//         DE: Debug + EncodePublicKey<PublicKey<C>> + DecodePublicKey<elliptic_curve::PublicKey<C>>,
-//         <DE as EncodePublicKey<PublicKey<C>>>::EncodedLen: Debug
-// {
-//     ///
-//     /// Decapsulate the provided Encapsulated key
-//     /// 
-//     fn try_decap(&self, encapped_key: &EcEncapKey<C,L,DE>) -> Result<SharedSecret<EcEncapKey<C,L,DE>>, kem::Error> {
-
-//         let public_point = ProjectivePoint::<C>::from(*encapped_key.to_public_key()?.as_affine());
-        
-//         let raw_shared_secret = public_point * *self.private.to_nonzero_scalar();
-//         let raw_shared_secret = elliptic_curve::group::Curve::to_affine(&raw_shared_secret);
-
-//         let shared_secret = self.kdf.combine(&raw_shared_secret.x().as_ref(), raw_shared_secret.to_encoded_point(false).y().unwrap(), &encapped_key.bytes, &DE::encode(&self.private.public_key()));
-
-//         Ok(SharedSecret::new(shared_secret))
-//     }
-// }
-// impl<C,K,L,E,DE> PrivateKeyInit<SecretKey<C>> for EcMqvAuthEncapsulator<C,K,L,E,DE>
-// where   C: CurveArithmetic+PointCompression, 
-//         K: MqvAuthCombiner + Default,
-//         E: ArrayLength<u8>,
-//         L: ArrayLength<u8>,
-// {
-//     fn new(private_key: SecretKey<C>) -> Self {
-//         Self { kdf: K::default(), sec_key: private_key, _phantom: PhantomData, _phantom3: PhantomData, _phantom4: PhantomData, recip_key: None}
-//     }
-// }
-// impl<C,K,L,E,DE> Encapsulator<EcEncapKey<C,L,DE>> for EcMqvAuthEncapsulator<C,K,L,E,DE>
-// where   C: CurveArithmetic + PointCompression + PrimeCurve,
-//         K: MqvAuthCombiner<> + Clone,
-//         E: ArrayLength<u8> + Debug,
-//         L: ArrayLength<u8> + Debug,
-//         <C as CurveArithmetic>::AffinePoint: ToEncodedPoint<C> + FromEncodedPoint<C>,
-//         FieldBytesSize<C>: ModulusSize,
-//         DE: Debug + EncodePublicKey<PublicKey<C>> + DecodePublicKey<elliptic_curve::PublicKey<C>>,
-//         <DE as EncodePublicKey<PublicKey<C>>>::EncodedLen: Debug
-
-// {
-//     /// Generate and encapsulate a key using the given recipients public key
-//     /// Returns the encapsulated key, as well as the shared secret
-//     fn try_encap<R: CryptoRng + RngCore>(
-//         &self,
-//         csprng: &mut R,
-//         //recip_pubkey: &EK::RecipientPublicKey
-//         recip_pubkey: &<EcEncapKey<C,L,DE> as EncappedKey>::RecipientPublicKey
-//     ) -> Result<(EcEncapKey<C,L,DE>, SharedSecret<EcEncapKey<C,L,DE>>), kem::Error> 
-//     {
-//         let ( encoded_ephemeral_public_key, ephemeral_prv ) = EcEncapKey::<C,L,DE>::generate ( csprng );
-
-//         let raw_shared_secret = mqv2 ( &self.sec_key, &ephemeral_prv, recip_pubkey, recip_pubkey);
-//         let raw_shared_secret = elliptic_curve::group::Curve::to_affine(&raw_shared_secret);
-        
-//         let derived_shared_secret = self.kdf.combine(&raw_shared_secret.x().as_ref(), &DE::encode(&encoded_ephemeral_public_key.to_public_key()?), &DE::encode(&recip_pubkey), &DE::encode(&self.sec_key.public_key()) );
-
-//         Ok((encoded_ephemeral_public_key, SharedSecret::new(derived_shared_secret)))
-//     }
-// }
-
-
-// impl<C,K,L,DE> PrivateKeyInit<SecretKey<C>> for EcdhAuthEncapsulator<C,K,L,DE> 
-// where   C: CurveArithmetic+PointCompression, 
-//         K: EcdhAuthCombiner + Default,
-//         L: ArrayLength<u8>
-// {
-//     /// Create a new Encapsulator struct using the given kdf and static secret key
-//     fn new (sec_key: SecretKey<C>) -> Self {
-//         EcdhAuthEncapsulator { kdf: K::default(), sec_key, _phantom4: PhantomData, recip_pub: None, _phantom5: PhantomData}
-//     }
-//}
-// impl<C,K,L,DE> Encapsulator<EcEncapKey<C,L,DE>> for EcdhAuthEncapsulator<C,K,L,DE>
-// where   C: CurveArithmetic + PointCompression + PrimeCurve,
-//         K: EcdhAuthCombiner<> + Clone,
-//         <C as CurveArithmetic>::AffinePoint: ToEncodedPoint<C> + FromEncodedPoint<C>,
-//         FieldBytesSize<C>: ModulusSize,
-//         L: ArrayLength<u8> + Debug,
-//         DE: Debug + EncodePublicKey<PublicKey<C>> + DecodePublicKey<elliptic_curve::PublicKey<C>>,
-//         <DE as EncodePublicKey<PublicKey<C>>>::EncodedLen: Debug,
-// {
-//     /// Generate and encapsulate a key using the given recipients public key
-//     /// Returns the encapsulated key, as well as the shared secret
-//     fn try_encap<R: CryptoRng + RngCore>(
-//         &self,
-//         csprng: &mut R,
-//         recip_pubkey: &<EcEncapKey<C,L,DE> as EncappedKey>::RecipientPublicKey
-//     ) -> Result<(EcEncapKey<C,L,DE>, SharedSecret<EcEncapKey<C,L,DE>>), kem::Error> 
-//     {
-//         let ( encoded_ephemeral_public_key, ephemeral_prv ) = EcEncapKey::<C,L,DE>::generate ( csprng );
-//         let public_point = recip_pubkey.to_projective();
-//         let raw_shared_secret_1 = public_point * *ephemeral_prv.to_nonzero_scalar();
-//         let raw_shared_secret_2 = public_point * *self.sec_key.to_nonzero_scalar();
-        
-//         let raw_shared_secret_1 = elliptic_curve::group::Curve::to_affine(&raw_shared_secret_1);
-//         let raw_shared_secret_2 = elliptic_curve::group::Curve::to_affine(&raw_shared_secret_2);
-        
-//         let derived_shared_secret = self.kdf.combine(&raw_shared_secret_1.x().as_ref(), &raw_shared_secret_2.x().as_ref(), &DE::encode(&ephemeral_prv.public_key()), &DE::encode(recip_pubkey), &DE::encode(&self.sec_key.public_key()));
-
-//         Ok((encoded_ephemeral_public_key, SharedSecret::new(derived_shared_secret)))
-//     }
-// }
-
-
-// impl<C> Debug for EcCompressedEncoder<C>
-// {
-//     fn fmt(&self, _f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-//         todo!()
-//     }
-// }
-// impl<C> Debug for EcUncompressedEncoder<C>
-// {
-//     fn fmt(&self, _f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-//         todo!()
-//     }
-// }
-// impl<C> Debug for EcRawEncoder<C>
-// {
-//     fn fmt(&self, _f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-//         todo!()
-//     }
-//}
-// impl<C,K,L,E> EncodePublicKey<PublicKey<C>> for EcdhEncapsulator<C,K,L,E>
-//     where   C: CurveArithmetic+PointCompression, 
-//         <C as elliptic_curve::Curve>::FieldBytesSize: ModulusSize,
-//         K: DhKemKdf + Default, 
-//         E: ArrayLength<u8>,
-//         L: ArrayLength<u8>,
-//         <C as CurveArithmetic>::AffinePoint: FromEncodedPoint<C>,
-//         <C as CurveArithmetic>::AffinePoint: ToEncodedPoint<C>
-// {
-//     type EncodedLen = E;
-//     fn encode(public_key: &PublicKey<C>) -> GenericArray<u8, Self::EncodedLen> {
-//         //let b = public_key.as_bytes();
-//         //let g: &GenericArray<u8, U32> = b.into();
-//         let is_compressed = E::USIZE == CompressedPointSize::<C>::to_usize();
-
-//         let ephemeral_public_encoded = elliptic_curve::sec1::ToEncodedPoint::to_encoded_point(public_key, is_compressed);
-//         let byte_array = GenericArray::from_slice(ephemeral_public_encoded.as_bytes());
-//         byte_array.clone()
-//     }
-// }
-
-// impl<C,K,L,DE> Clone for EcdhEncapsulator<C,K,L,DE> 
-// where   C: CurveArithmetic+PointCompression, 
-//         K: EcdhCombiner + Default, 
-//         L: ArrayLength<u8>,
-//         K: Clone,
-// {
-//     fn clone(&self) -> Self {
-//         Self{ kdf: self.kdf.clone(), recipient_public: self.recipient_public.clone(), _phantom2: PhantomData, _phantom4: PhantomData, _phantom5: PhantomData }
-//     }
-// }
-// impl<C: CurveArithmetic+PointCompression, K: EcdhCombiner, L: ArrayLength<u8>, ED> std::fmt::Debug for EcdhEncapsulator<C,K,L,ED>
-// {
-//     fn fmt(&self, _f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-//         todo!()
-//     }
-// }
-
-// impl<C: CurveArithmetic+PointCompression, K: EcdhCombiner, L: ArrayLength<u8>, ED> PartialEq for EcdhEncapsulator<C,K,L,ED>
-// {
-//     fn eq(&self, _other: &Self) -> bool {
-//         todo!()
-//     }
-// }
-
-// impl<C,K,L,DE> Encapsulator<EcEncapKey<C,L,DE>> for EcdhEncapsulator<C,K,L,DE>
-// where   C: CurveArithmetic + PointCompression,
-//         //K: DhKemKdf<SharedSecret=ProjectivePoint<C>, PublicKey=PublicKey<C>> + Clone,
-//         K: EcdhCombiner<> + Clone,
-//         //E: ArrayLength<u8> + Debug,
-//         L: ArrayLength<u8> + Debug,
-//         <C as CurveArithmetic>::AffinePoint: ToEncodedPoint<C> + FromEncodedPoint<C>,
-//         FieldBytesSize<C>: ModulusSize,
-//         DE: Debug + EncodePublicKey<PublicKey<C>> + DecodePublicKey<elliptic_curve::PublicKey<C>>,
-//         <DE as EncodePublicKey<PublicKey<C>>>::EncodedLen: Debug,
-// {
-//     /// Generate and encapsulate a key using the given recipients public key
-//     /// Returns the encapsulated key, as well as the shared secret
-//     fn try_encap<R: CryptoRng + RngCore>(
-//         &self,
-//         csprng: &mut R,
-//         //recip_pubkey: &EK::RecipientPublicKey
-//         recip_pubkey: &<EcEncapKey<C,L,DE> as EncappedKey>::RecipientPublicKey
-//     ) -> Result<(EcEncapKey<C,L,DE>, SharedSecret<EcEncapKey<C,L,DE>>), kem::Error> {
-    
-//         // create a new EC key pair for this encapsulation using the provided rng
-//         let (encoded_ephemeral_public_key, ephemeral_prv) = EcEncapKey::<C,L,DE>::generate(csprng);
-        
-//         // perform the diffie-hellman action by multiplying the public and private keys
-//         let raw_shared_secret = recip_pubkey.to_projective() * *ephemeral_prv.to_nonzero_scalar();
-//         let raw_shared_secret = elliptic_curve::group::Curve::to_affine(&raw_shared_secret);
-//         let raw_shared_secret2 = raw_shared_secret.to_encoded_point(false);
-        
-//         let derived_shared_secret = self.kdf.combine(&raw_shared_secret.x().as_ref(), raw_shared_secret2.y().unwrap(), &DE::encode(&ephemeral_prv.public_key()), &DE::encode(recip_pubkey));
-
-//         Ok((encoded_ephemeral_public_key, SharedSecret::new(derived_shared_secret)))
-//     }
-// }
-// impl<C,K,L,DE> EcdhAuthEncapsulator<C,K,L,DE> 
-// where   C: CurveArithmetic+PointCompression, 
-//         K: EcdhAuthCombiner + Default,
-//         L: ArrayLength<u8>,
-// {
-//     pub fn new2 (sec_key: SecretKey<C>, recip_pub: PublicKey<C>) -> Self {
-//         Self { kdf: K::default(), sec_key, _phantom4: PhantomData, recip_pub, _phantom5: PhantomData }
-//     }
-//}
-
-
-  
-
-// #[derive(Debug)]
-// pub struct EcEncapKey <C,L,ED> 
-// where   C: CurveArithmetic, 
-//         L: ArrayLength<u8>, 
-//         ED: EncodePublicKey<PublicKey<C>>,
-// { 
-//     bytes: GenericArray<u8, ED::EncodedLen>, 
-//     phantom: PhantomData<L>,
-//     phantom2: PhantomData<C>,
-// }
-
-// /// Type representing an uncompressed encapsulated key. For C and L see EcEncapKey
-// pub type EcEncapKeyUncompressed<C,L> = EcEncapKey<C,L,EcUncompressedEncoder<C>>;
-// /// Type representing a compressed encapsulated key. For C and L see EcEncapKey
-// pub type EcEncapKeyCompressed<C,L> = EcEncapKey<C,L,EcCompressedEncoder<C>>;
-
-
-// ///
-// /// Implementation of trait EncappedKey. Provides functions to import and export an EcEncapKey as a byte array
-// /// 
-// impl <C, L, ED> EncappedKey for EcEncapKey<C,L,ED> 
-// where L: ArrayLength<u8> + std::fmt::Debug,
-//     <C as Curve>::FieldBytesSize: ModulusSize,
-//     <C as CurveArithmetic>::AffinePoint: FromEncodedPoint<C>,
-//     C: CurveArithmetic + elliptic_curve::point::PointCompression,
-//     <C as CurveArithmetic>::AffinePoint: ToEncodedPoint<C>,
-//     ED: Debug + EncodePublicKey<PublicKey<C>>,
-//     <ED as EncodePublicKey<PublicKey<C>>>::EncodedLen: Debug
-// {
-//     type EncappedKeySize = ED::EncodedLen;
-//     type SharedSecretSize = L;
-//     type SenderPublicKey = PublicKey<C>;
-//     type RecipientPublicKey = PublicKey<C>;
-
-//     fn from_bytes(bytes: &GenericArray<u8, Self::EncappedKeySize>) -> Result<Self, kem::Error> {
-//         println! ( "EncappedKeySize = {}", Self::EncappedKeySize::ISIZE);
-//         Ok(EcEncapKey { bytes: bytes.clone(), phantom: PhantomData, phantom2: PhantomData})
-//     }
-// }
-
-// /// Dereference coersion to a byte slice
-// impl <C,L,ED> AsRef<[u8]> for EcEncapKey<C,L,ED> 
-// where   C: CurveArithmetic, 
-//         L: ArrayLength<u8>, 
-//         //E: ArrayLength<u8>,
-//         <C as Curve>::FieldBytesSize: ModulusSize,
-//         ED: EncodePublicKey<PublicKey<C>>,
-// {
-//     /// Retrieve reference to encoded key as a byte slice
-//     fn as_ref(&self) -> &[u8] {
-//         self.bytes.as_slice()
-//     }
-// }
-
-// ///
-// /// Functions converting between an EnEncapKey and the raw x and y coordinates
-// /// 
-// impl <C, L, ED> EcEncapKey<C,L,ED> 
-// where   C: CurveArithmetic  + PointCompression,
-//         L: ArrayLength<u8> + Debug, 
-//         //E: ArrayLength<u8> + Debug,
-//         <C as elliptic_curve::Curve>::FieldBytesSize: ModulusSize,
-//         <C as CurveArithmetic>::AffinePoint: FromEncodedPoint<C>,
-//         <C as CurveArithmetic>::AffinePoint: ToEncodedPoint<C>,
-//         ED: Debug + EncodePublicKey<PublicKey<C>> + DecodePublicKey<PublicKey<C>>,
-//         <ED as EncodePublicKey<PublicKey<C>>>::EncodedLen: Debug,
-// {
-//     ///
-//     /// Allows for the extraction of x and y components of the public key encapsulated in the struct
-//     /// 
-//     pub fn to_encoded_point(&self) -> Result<sec1::EncodedPoint<C>, kem::Error> {
-//         return sec1::EncodedPoint::<C>::from_bytes(&self.bytes).map_err(|_e|kem::Error);
-//     }
-//     ///
-//     /// Create an EcEncapKey from an x and y coordinate supplied in raw byte form
-//     /// 
-//     pub fn from_x_y ( x: &[u8], y: &[u8]) -> EcEncapKey<C,L,ED> {
-//         let encoded_point = elliptic_curve::sec1::EncodedPoint::<C>::from_affine_coordinates(
-//             GenericArray::from_slice(&x), GenericArray::from_slice(&y), false);
-        
-//         EcEncapKey { bytes: GenericArray::from_slice(encoded_point.as_bytes()).clone(), phantom: PhantomData, phantom2: PhantomData }
-//     }
-//     ///
-//     /// Covert the encapsulated key to a PublicKey
-//     /// 
-//     pub fn to_public_key (&self) -> Result<PublicKey::<C>, kem::Error>{
-//         //PublicKey::<C>::from_sec1_bytes(&self.bytes).map_err(|_e|kem::Error)
-//         ED::decode(&self.bytes).map_err(|_e|kem::Error)
-//     }
-
-//     ///
-//     /// Generate a new key and return the encoded version and private key
-//     /// 
-//     pub fn generate<R: CryptoRng + RngCore> ( csprng: &mut R )-> ( EcEncapKey<C,L,ED>, SecretKey<C> )
-//     {
-//         let ephemeral_prv = SecretKey::<C>::random(csprng);
-//         ( Self::from(ephemeral_prv.public_key()), ephemeral_prv)
-//     }
-// }
-
-
-
-
-// /// Convert from an Elliptic Curve PublicKey to an EcEncapKey
-// impl <C, L, ED> From<PublicKey<C>> for EcEncapKey<C,L,ED>
-// where   C: CurveArithmetic + PointCompression,
-//         L: ArrayLength<u8> + Debug,
-//         <C as Curve>::FieldBytesSize: ModulusSize,
-//         <C as CurveArithmetic>::AffinePoint: FromEncodedPoint<C> + ToEncodedPoint<C>,
-//         ED: Debug + EncodePublicKey<PublicKey<C>>,
-//         <ED as EncodePublicKey<PublicKey<C>>>::EncodedLen: Debug,
-// {
-//     fn from(value: elliptic_curve::PublicKey<C>) -> Self {
-//         let byte_array = ED::encode(&value);
-//         EcEncapKey { bytes: byte_array, phantom: PhantomData, phantom2: PhantomData }
-//     }
-// }
-
-// impl <C, L, ED> TryInto<PublicKey<C>> for EcEncapKey<C,L,ED>
-// where   C: CurveArithmetic + PointCompression,
-//         L: ArrayLength<u8> + Debug,
-//         <C as Curve>::FieldBytesSize: ModulusSize,
-//         <C as CurveArithmetic>::AffinePoint: FromEncodedPoint<C>,
-//         <C as CurveArithmetic>::AffinePoint: ToEncodedPoint<C>,
-//         ED: EncodePublicKey<PublicKey<C>>
-// {
-//     type Error = elliptic_curve::Error;
-//     fn try_into(self) -> Result<PublicKey<C>, Self::Error>
-//     {
-//         PublicKey::<C>::from_sec1_bytes(&self.bytes)
-//     }
-// }
-
-
-
-
-
-
-// impl<C,K,L,DE> GetPublicKey<PublicKey<C>> for EcdhEncapsulator<C,K,L,DE> 
-// where   C: CurveArithmetic+PointCompression, 
-//         K: EcdhCombiner,
-//         L: ArrayLength<u8>,
-// {
-//     fn get_public_key (&self) -> &PublicKey<C> {
-//         //let pk) = &self.key else { panic! ( "Missing key")};
-//         &self.key
-//     }
-// }
-// impl<C,K,L,DE> Default for EcdhEncapsulator<C,K,L,DE> 
-// where   C: CurveArithmetic+PointCompression, 
-//         K: EcdhCombiner + Default, 
-//         L: ArrayLength<u8>,
-// {
-//     /// Create a new EcdhEncapsulator struct using the given Curve, Output length and kdf
-//     fn default () -> Self {
-//         EcdhEncapsulator { kdf: K::default(), _phantom2: PhantomData, _phantom4: PhantomData, _phantom5: PhantomData, key: None }
-//     }
-// }
-// impl<C,K,L,DE> EncapsulatorInit<K> for EcdhEncapsulator<C,K,L,DE> 
-// where   C: CurveArithmetic+PointCompression, 
-//         K: EcdhCombiner,
-//         L: ArrayLength<u8>,
-// {
-//     /// Create a new EcdhEncapsulator struct using the given Curve, Output length and kdf
-//     fn new (kdf: K) -> Self {
-//         EcdhEncapsulator { _phantom2: PhantomData, kdf: kdf, _phantom4: PhantomData, _phantom5: PhantomData, key: None }
-//     }
-// }
-// impl<C,K,L,DE> EncodePublicKey<PublicKey<C>> for EcdhEncapsulator<C,K,L,DE> 
-// where   C: CurveArithmetic+PointCompression, 
-//         K: EcdhCombiner + Default, 
-//         L: ArrayLength<u8>,
-//         DE: EncodePublicKey<PublicKey<C>>
-// {
-//     type EncodedLen = DE::EncodedLen;
-//     fn encode(public_key: &PublicKey<C>) -> GenericArray<u8, Self::EncodedLen> {
-//         DE::encode(public_key)
-//     }
-// }
-
-// impl<C,K,L,DE> Encode for EcdhEncapsulator<C,K,L,DE> 
-// where   C: CurveArithmetic+PointCompression, 
-//         K: EcdhCombiner + Default, 
-//         L: ArrayLength<u8>,
-//         DE: EncodePublicKey<PublicKey<C>>
-// {
-//     type EncodedLen = DE::EncodedLen;
-//     fn encode(&self) -> GenericArray<u8, Self::EncodedLen> {
-//         //let Some(key) = self.key else { panic! ("Missing key" ); };
-//         DE::encode(&self.key)
-//     }
-//     fn decode(enc: &GenericArray<u8, Self::EncodedLen>) -> Self {
-//         todo!()
-//     }
-// }
-
-
-
-// impl<C,K,L,DE> EncodePublicKey<PublicKey<C>> for EcdhDecapsulator<C,K,L,DE> 
-// where   C: CurveArithmetic+PointCompression, 
-//         K: EcdhCombiner + Default, 
-//         L: ArrayLength<u8>,
-//         DE: EncodePublicKey<PublicKey<C>>
-// {
-//     type EncodedLen = DE::EncodedLen;
-//     fn encode(public_key: &PublicKey<C>) -> GenericArray<u8, Self::EncodedLen> {
-//         DE::encode(public_key)
-//     }
-// }
-
-// impl<C,K,L,DE> Encode for EcdhDecapsulator<C,K,L,DE> 
-// where   C: CurveArithmetic+PointCompression, 
-//         K: EcdhCombiner + Default, 
-//         L: ArrayLength<u8>,
-//         DE: EncodePublicKey<PublicKey<C>>
-// {
-//     type EncodedLen = DE::EncodedLen;
-//     fn encode(&self) -> GenericArray<u8, Self::EncodedLen> {
-//         DE::encode(self.private)
-//     }
-// }
-
-
-// Trait for a Key Derivation Function designed for a Key Encapsulation Mechanism.
-// Two types of parameters are passed to the derive function
-// - SharedSecret which is typically output from the Diffie Hellman primitive. These value must be used in the key derivation
-// - PublicKey type used to pass the ephemeral and recipient public keys. These keys may or may not be used in the key derivation
-// pub trait EcdhCombiner {
-//     fn combine<L: ArraySize>(&self, raw_shared_secret_x: impl AsRef<[u8]>, raw_shared_secret_y:impl AsRef<[u8]> /*Self::SharedSecret*/, ephemeral_pub: impl AsRef<[u8]> /*Self::PublicKey*/, recipient_pub: impl AsRef<[u8]> /*&Self::PublicKey*/ ) -> Array<u8, L>;
-// }
-
-// A combiner which is passed the outputs from the ECDH algorithm and associated public keys and returns the shared secret.
-// 
-// Two types of parameters are passed to the combiner:
-// - SharedSecrets which are output from the Diffie-Hellman primitive. These values must be used in the key derivation
-// - PublicKey type used to pass the ephemeral, recipient and sender public keys. These keys may or may not be used in the key derivation
-// pub trait EcdhAuthCombiner {
-//     fn combine<L: ArraySize>(&self, raw_shared_secret_1: impl AsRef<[u8]>, raw_shared_secret_2: impl AsRef<[u8]>, ephemeral_pub: impl AsRef<[u8]>, recipient_pub: impl AsRef<[u8]>, sender_pub: impl AsRef<[u8]> ) -> Array<u8, L>;
-// }
-
-// A combiner which accepts the ouput from the MQV algorithm and returns a shared secret 
-// 
-// This trait accepts a single raw_shared secret field and three public keys.
-// pub trait MqvAuthCombiner {
-//     fn combine<L: ArraySize>(&self, raw_shared_secret: impl AsRef<[u8]>, ephemeral_pub: impl AsRef<[u8]>, recipient_pub: impl AsRef<[u8]>, sender_pub: impl AsRef<[u8]> ) -> Array<u8, L>;
-// }
-
-
-
-//
-// A combiner for Elliptic Curve which applies a Kdf to the X and Y coordinates
-// 
-// #[derive(Clone)]
-// pub struct EcCombinerXYNoPubKeys<K:Kdf> { 
-//     kdf: K, 
-// }
-
-// impl<K: Kdf + Default> Default for EcCombinerXYNoPubKeys<K>
-// {
-//     fn default() -> Self {
-//         return Self{kdf: K::default()}
-//     }
-// }
-// impl<K: Kdf + InitSalt> InitSalt for EcCombinerXYNoPubKeys<K>
-// {
-//     fn new_with_salt(salt: &[u8]) -> Self {
-//         return Self{kdf: K::new_with_salt(salt)}
-//     }
-// }
-
-// impl<K: Kdf + Default + Clone> EcdhCombiner for EcCombinerXYNoPubKeys<K>
-// {
-//     fn combine<L:ArraySize> (&self, raw_shared_secret_x: impl AsRef<[u8]>, raw_shared_secret_y: impl AsRef<[u8]>,  _ephemeral_pub: impl AsRef<[u8]>, _recipient_pub: impl AsRef<[u8]> ) -> Array<u8, L>
-//     {
-//         self.kdf.derive_self_secrets_others ([raw_shared_secret_x.as_ref(), raw_shared_secret_y.as_ref()], None )
-//     }
-// }
-
-
-//
-// Elliptic Curve Combiner as used by the OpenPgp standard, RFC 9580
-// Two KDFs are mentioned in RFC 9580
-// - Concat KDF 
-// - HKDF
-// This implementation has a generic parameter which allows for any regular Kdf to be used
-// 
-// pub struct EcCombinerOpenPgp<K:Kdf> (PhantomData<K>);
-// impl<K: Kdf + Default> Default for EcCombinerOpenPgp<K>{
-//     fn default() -> Self {
-//         Self(Default::default())
-//     }
-// }
-
-// impl<K:Kdf + Default> Kdf for EcCombinerOpenPgp<K>
-// {
-//     fn derive_self_secrets_others_into<'a,'b> ( &self, secret: impl IntoIterator<Item=&'a[u8]> + Clone, other_data: impl IntoIterator<Item=&'b[u8]> + Clone, out: &mut [u8]) -> Result<(), kdfs::Error> {
-//         let secrets : Vec<_>= secret.into_iter().collect();
-//         let other_data: Vec<_> = other_data.into_iter().collect();
-//         K::default().derive_self_secrets_other_into([other_data[0], other_data[1], secrets[0]], b"OpenPGP X25519", out)
-//     }
-// }
-
-
-
-impl<C, DE,G, S> kem::Kem for EcdhKem<C,DE,G, S>
+impl<C, E> Encapsulate for EcdhEncapsulator<C,E>
 where C: Sync + Send,
     C: CurveArithmetic+PointCompression,
     C::FieldBytesSize: ModulusSize,
     C::AffinePoint: FromSec1Point<C> + ToSec1Point<C>,
-    
-    DE: Sync + Send + 'static,
-    DE: EncodeGenericArray<PublicKey<C>> + DecodeSlice<PublicKey<C>> + DecodeSlice<SecretKey<C>> + EncodeGenericArray<SecretKey<C>>, 
-    <DE as EncodeGenericArray<PublicKey<C>>>::EncodedLen: ArraySize,    
-    <DE as DecodeSlice<PublicKey<C>>>::Error: Debug,
-    //S: SecretPointToBytes<C>,
-    S: EncodeHybridArray<AffinePoint<C>> + Send + Sync + 'static,
-    G: Send + Sync + 'static,
+    E: EcEncode<C> + Sync + Send + 'static,
 {
-    type EncapsulationKey = EcdhEncapsulator<C,DE,S,G>;
-    type DecapsulationKey = EcdhDecapsulator<C,DE,S,G>;
-    type CiphertextSize = <DE as EncodeGenericArray<PublicKey<C>>>::EncodedLen;
-    type SharedKeySize = <S as EncodeHybridArray<AffinePoint<C>>>::EncodedLen;
-}
+    type Kem = EcdhKem<C,E>;
 
-impl<C, DE,G, S> Ord for EcdhKem<C,DE,G, S>
-{
-    fn cmp(&self, _other: &Self) -> std::cmp::Ordering {
-        todo!()
-    }
-}
-impl<C, DE,G, S> PartialOrd for EcdhKem<C,DE,G, S>
-{
-    fn partial_cmp(&self, _other: &Self) -> Option<std::cmp::Ordering> {
-        todo!()
-    }
-}
-impl<C, DE,G, S> PartialEq for EcdhKem<C,DE,G, S>
-{
-    fn eq(&self, other: &Self) -> bool {
-        self.0 == other.0 && self.1 == other.1 && self.2 == other.2 && self.3 == other.3
-    }
-}
-impl<C, DE,G, S> Eq for EcdhKem<C,DE,G, S>
-{
-}
-impl<C, DE,G, S> Default for EcdhKem<C,DE,G, S>
-{
-    fn default() -> Self {
-        Self(Default::default(), Default::default(), Default::default(), Default::default())
-    }
-}
-impl<C, DE,G, S> Debug for EcdhKem<C,DE,G, S>
-{
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_tuple("EcdhKem").field(&self.0).field(&self.1).field(&self.2).field(&self.3).finish()
-    }
-}
-impl<C, DE,G, S> Copy for EcdhKem<C,DE,G, S>
-{
-}
-impl<C, DE,G, S> Clone for EcdhKem<C,DE,G, S>
-{
-    fn clone(&self) -> Self {
-        *self
-    }
-}
-
-impl<C, DE,G, S> Eq for EcdhEncapsulator<C,DE,S,G>
-where C: CurveArithmetic+PointCompression,
-{
-
-}
-impl<C, DE,G, S> PartialEq for EcdhEncapsulator<C,DE,S,G>
-where C: CurveArithmetic+PointCompression,
-{
-    fn eq(&self, other: &Self) -> bool {
-        self.recipient_public == other.recipient_public && self._phantom2 == other._phantom2 && self._phantom5 == other._phantom5 && self._phantom6 == other._phantom6
-    }
-    
-}
-impl<C, DE,G, S> Debug for EcdhEncapsulator<C,DE,S,G>
-where C: CurveArithmetic+PointCompression,
-{
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("EcdhEncapsulator").field("recipient_public", &self.recipient_public).field("_phantom2", &self._phantom2).field("_phantom5", &self._phantom5).field("_phantom6", &self._phantom6).finish()
-    }
-}
-impl<C, DE,G, S> Clone for EcdhEncapsulator<C,DE,S,G>
-where C: CurveArithmetic+PointCompression,
-{
-    fn clone(&self) -> Self {
-        Self { recipient_public: self.recipient_public.clone(), _phantom2: self._phantom2.clone(), _phantom5: self._phantom5.clone(), _phantom6: self._phantom6.clone() }
-    }
-}
-impl<C, DE,G, S> kem::Encapsulate for EcdhEncapsulator<C,DE,S,G>
-where C: Sync + Send,
-    C: CurveArithmetic+PointCompression,
-    C::FieldBytesSize: ModulusSize,
-    C::AffinePoint: FromSec1Point<C> + ToSec1Point<C>,
-    
-    DE: Sync + Send + 'static,
-    DE: EncodeGenericArray<PublicKey<C>> + DecodeSlice<PublicKey<C>> + DecodeSlice<SecretKey<C>> + EncodeGenericArray<SecretKey<C>>, 
-    <DE as EncodeGenericArray<PublicKey<C>>>::EncodedLen: ArraySize,    
-    <DE as DecodeSlice<PublicKey<C>>>::Error: Debug,
-    //S: SecretPointToBytes<C>,
-    S: EncodeHybridArray<AffinePoint<C>> + Send + Sync + 'static,
-    G: Send + Sync + 'static,
-{
-    type Kem = EcdhKem<C,DE,G, S>;
-
-    fn encapsulate_with_rng<R>(&self, _rng: &mut R) -> (kem::Ciphertext<Self::Kem>, kem::SharedKey<Self::Kem>)
+    fn encapsulate_with_rng<R>(&self, rng: &mut R) -> (Ciphertext<Self::Kem>, SharedKey<Self::Kem>)
     where
         R: rand::CryptoRng + ?Sized {
-        todo!()
-    }
-}
-impl<C, DE,G, S> TryKeyInit for EcdhEncapsulator<C,DE,S,G>
-where C: CurveArithmetic+PointCompression,
-     DE: DecodeSlice<PublicKey<C>> + EncodeGenericArray<PublicKey<C>>,
-    <DE as DecodeSlice<PublicKey<C>>>::Error: Debug,
-    DE::EncodedLen: ArraySize,
-{
-    fn new(_key: &cipher::Key<Self>) -> Result<Self, kem::InvalidKey> {
-        todo!()
+        
+        let ephemeral_prv = SecretKey::generate_from_rng(rng);
+        self.encapsulate_deterministic_key(&ephemeral_prv).unwrap()
     }
 }
 
 
-impl<C, DE,G, S> Generate for EcdhDecapsulator<C,DE,S,G>
+
+impl<C, E> Generate for EcdhDecapsulator<C,E>
 where C: Sync + Send,
     C: CurveArithmetic+PointCompression,
 {
@@ -2444,47 +820,472 @@ where C: Sync + Send,
     }
 }
 
-impl<C, DE,G, S> TryDecapsulate for EcdhDecapsulator<C,DE,S,G>
+impl<C, E> Decapsulate for EcdhDecapsulator<C,E>
+where C: Sync + Send,
+    C: CurveArithmetic+PointCompression,
+    C::FieldBytesSize: ModulusSize,
+    C::AffinePoint: FromSec1Point<C> + ToSec1Point<C>,
+    E: Sync + Send + 'static + EcEncode<C>, 
+{
+    fn decapsulate(&self, ct: &Ciphertext<Self::Kem>) -> SharedKey<Self::Kem> {
+        let encapped_key : PublicKey<C> = E::decode_public_key(&ct).unwrap();
+
+        let public_point = ProjectivePoint::<C>::from(*encapped_key.as_affine());
+        
+        let raw_shared_secret = public_point * *self.recipient_private.to_nonzero_scalar();
+        let raw_shared_secret = elliptic_curve::group::Curve::to_affine(&raw_shared_secret);
+
+        E::encode_shared_secret(&raw_shared_secret)
+    }
+}
+
+
+impl<C, E> Decapsulator for EcdhDecapsulator<C,E>
 where C: Sync + Send,
     C: CurveArithmetic+PointCompression,
     C::FieldBytesSize: ModulusSize,
     C::AffinePoint: FromSec1Point<C> + ToSec1Point<C>,
     
-    DE: Sync + Send + 'static,
-    DE: EncodeGenericArray<PublicKey<C>> + DecodeSlice<PublicKey<C>> + DecodeSlice<SecretKey<C>> + EncodeGenericArray<SecretKey<C>>, 
-    <DE as EncodeGenericArray<PublicKey<C>>>::EncodedLen: ArraySize,    
-    <DE as DecodeSlice<PublicKey<C>>>::Error: Debug,
-    //S: SecretPointToBytes<C>,
-    S: EncodeHybridArray<AffinePoint<C>> + Send + Sync + 'static,
-    G: Send + Sync + 'static,
+    E: EcEncode<C> + Sync + Send + 'static,
 {
-    type Error = Infallible;
+    type Kem = EcdhKem<C,E>;
 
-    fn try_decapsulate(
-        &self,
-        _ct: &kem::Ciphertext<Self::Kem>,
-    ) -> Result<kem::SharedKey<Self::Kem>, Self::Error> {
+    fn encapsulation_key(&self) -> &EncapsulationKey<Self::Kem> {
+        &self.encapsulation_key
+    }
+}
+
+
+
+impl<C: CurveArithmetic+PointCompression, E> EncapsulateDeterministic for EcdhEncapsulator <C, E>
+where   C: CurveArithmetic + PointCompression,
+        C::AffinePoint: ToSec1Point<C> + FromSec1Point<C>,
+        FieldBytesSize<C>: ModulusSize,
+        E: EcEncode<C> + 'static + Send + Sync,
+{
+    type Kem = EcdhKem<C,E>;
+    type SeedSize = FieldBytesSize<C>;
+    
+    fn encapsulate_deterministic(&self, seed: &[u8]) -> (Ciphertext<Self::Kem>, SharedKey<Self::Kem>) {
+        let Ok(ephemeral_prv) = SecretKey::from_bytes(seed.try_into().unwrap()) else { panic!("DFSDFSD") };
+        let (ek, shared_key) = self.encapsulate_deterministic_key(&ephemeral_prv).unwrap();
+        (ek, shared_key)
+
+    }
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+impl<C, E> Kem for EcdhAuthCapsulator<C,E>
+where 
+    E: EcEncode<C> + Sync + Send +'static, 
+    C: CurveArithmetic+PointCompression,
+    C::FieldBytesSize: ModulusSize,
+    C::AffinePoint: ToSec1Point<C> + FromSec1Point<C>, 
+    <C::FieldBytesSize as Add>::Output: ArraySize,
+
+    E::PublicKeyLen: Add<E::PublicKeyLen>,
+    Sum<E::PublicKeyLen, E::PublicKeyLen>: ArraySize,
+{
+    type EncapsulationKey = EcdhAuthEncapsulator<C,E>;
+    type DecapsulationKey = EcdhAuthDecapsulator<C,E>;
+    type CiphertextSize = E::PublicKeyLen;
+    type SharedKeySize = Sum<C::FieldBytesSize, C::FieldBytesSize>;
+
+}
+
+impl<C,E> Decapsulator for EcdhAuthDecapsulator<C,E>
+where E: EcEncode<C> + Sync + Send +'static, //+ DecodeKey<SecretKey<C>> + EncodeKey<SecretKey<C>> ,  
+    <E as EcEncode<C>>::PublicKeyLen: ArraySize,  
+    C: CurveArithmetic+PointCompression,
+    C::FieldBytesSize: ModulusSize,
+    C::AffinePoint: ToSec1Point<C> + FromSec1Point<C>, 
+    <C::FieldBytesSize as Add>::Output: ArraySize,    
+    E::PublicKeyLen: Add<E::PublicKeyLen>,
+    Sum<E::PublicKeyLen, E::PublicKeyLen>: ArraySize,
+{
+    type Kem = EcdhAuthCapsulator<C,E>;
+
+    fn encapsulation_key(&self) -> &EncapsulationKey<Self::Kem> {
+        &self.encapsulation_key
+    }
+}
+impl<C,E> Decapsulate for EcdhAuthDecapsulator<C,E>
+where E: EcEncode<C> + Sync + Send +'static, //+ DecodeKey<SecretKey<C>> + EncodeKey<SecretKey<C>> ,  
+    C: CurveArithmetic+PointCompression,
+    C::FieldBytesSize: ModulusSize,
+    C::AffinePoint: ToSec1Point<C> + FromSec1Point<C>, 
+    <C::FieldBytesSize as Add>::Output: ArraySize,
+    E::PublicKeyLen: Add<E::PublicKeyLen>,
+    Sum<E::PublicKeyLen, E::PublicKeyLen>: ArraySize,
+{
+    fn decapsulate(&self, ct: &Ciphertext<Self::Kem>) -> SharedKey<Self::Kem> {
+        let encapped_key = PublicKey::<C>::from_sec1_bytes(&ct).unwrap();
+        let public_point_1 = ProjectivePoint::<C>::from(*encapped_key.as_affine());
+        let public_point_2 = ProjectivePoint::<C>::from(*self.encapsulation_key.sender_public.as_affine());
+
+        let raw_shared_secret_1 = public_point_1 * *self.recipient_private.to_nonzero_scalar();
+        let raw_shared_secret_2 = public_point_2 * *self.recipient_private.to_nonzero_scalar();
+        
+        let raw_shared_secret_1 = elliptic_curve::group::Curve::to_affine(&raw_shared_secret_1).x();
+        let raw_shared_secret_2 = elliptic_curve::group::Curve::to_affine(&raw_shared_secret_2).x();
+
+        let raw_shared_secret = raw_shared_secret_1.concat::<C::FieldBytesSize>(raw_shared_secret_2);
+        raw_shared_secret
+    }
+}
+impl<C,DE> Generate for EcdhAuthDecapsulator<C,DE>
+where C: CurveArithmetic+PointCompression,
+{
+    fn try_generate_from_rng<R: rand::TryCryptoRng + ?Sized>(_srng: &mut R) -> Result<Self, R::Error> {
+        panic! ( "EcdhAuthDecapsulator cannot be generated from a single call to an RNG, instead call the from_keys member");
+    }
+}
+
+impl<C,E> EncapsulateDeterministic for EcdhAuthEncapsulator<C,E>
+where E: EcEncode<C> + Sync + Send +'static, //+ DecodeKey<SecretKey<C>> + EncodeKey<SecretKey<C>> ,  
+    C: CurveArithmetic+PointCompression,
+    C::FieldBytesSize: ModulusSize,
+    C::AffinePoint: ToSec1Point<C> + FromSec1Point<C>, 
+    <C::FieldBytesSize as Add>::Output: ArraySize,
+    E::PublicKeyLen: Add<E::PublicKeyLen>,
+    Sum<E::PublicKeyLen, E::PublicKeyLen>: ArraySize,
+{
+    type Kem = EcdhAuthCapsulator<C,E>;
+    type SeedSize = C::FieldBytesSize;
+
+    fn encapsulate_deterministic(&self, seed: &[u8]) -> (Ciphertext<Self::Kem>, SharedKey<Self::Kem>) {
+        let Ok(ephemeral_prv) = SecretKey::from_bytes(seed.try_into().unwrap()) else { panic!("DFSDFSD") };
+        let (ct, ss) = self.encapsulate_from_key ( &ephemeral_prv ).unwrap();
+        (ct.as_slice().try_into().unwrap(), ss)
+
+    }
+}
+
+impl<C,E> Encapsulate for EcdhAuthEncapsulator<C,E>
+where E: EcEncode<C> + Sync + Send +'static,
+    C: CurveArithmetic+PointCompression,
+    C::FieldBytesSize: ModulusSize,
+    C::AffinePoint: ToSec1Point<C> + FromSec1Point<C>, 
+    <C::FieldBytesSize as Add>::Output: ArraySize,
+    E::PublicKeyLen: Add<E::PublicKeyLen>,
+    Sum<E::PublicKeyLen, E::PublicKeyLen>: ArraySize,
+{
+    type Kem = EcdhAuthCapsulator<C,E>;
+
+    fn encapsulate_with_rng<R>(&self, _rng: &mut R) -> (Ciphertext<Self::Kem>, SharedKey<Self::Kem>)
+    where R: rand::prelude::CryptoRng + ?Sized 
+    {
+        let ephemeral_prv = SecretKey::generate_from_rng(_rng);
+        self.encapsulate_from_key(&ephemeral_prv).unwrap()
+    }
+}
+impl<C,E> KeyExport for EcdhAuthEncapsulator<C,E>
+where C: CurveArithmetic+PointCompression,
+    E: EcEncode<C>,
+    E::PublicKeyLen: Add<E::PublicKeyLen>,
+    Sum<E::PublicKeyLen, E::PublicKeyLen>: ArraySize,
+
+{
+    fn to_bytes(&self) -> Key<Self> {
+        let first = E::encode_public_key(&self.recipient_public);
+        let second = E::encode_public_key(&self.sender_public);
+        first.concat(second)
+    }
+}
+impl<C,E> TryKeyInit for EcdhAuthEncapsulator<C,E>
+where C: CurveArithmetic+PointCompression,
+    E: EcEncode<C>,
+    E::PublicKeyLen: Add<E::PublicKeyLen>,
+    Sum<E::PublicKeyLen, E::PublicKeyLen>: ArraySize,
+{
+    fn new(_key: &Key<Self>) -> Result<Self, InvalidKey> {
+        panic! ( "TryKeyInit cannot be used to create an EcdhAuthEncapsulator, use from_keys instead")
+    }
+}
+impl<C,E> KeySizeUser for EcdhAuthEncapsulator<C,E>
+where C: CurveArithmetic+PointCompression,
+    E: EcEncode<C>,
+    E::PublicKeyLen: Add<E::PublicKeyLen>,
+    Sum<E::PublicKeyLen, E::PublicKeyLen>: ArraySize,
+{
+    type KeySize = Sum<E::PublicKeyLen, E::PublicKeyLen>;
+    
+}
+impl<C,DE> Clone for EcdhAuthEncapsulator<C,DE>
+where C: CurveArithmetic+PointCompression,
+{
+    fn clone(&self) -> Self {
+        Self { recipient_public: self.recipient_public.clone(), sender_private: self.sender_private.clone(), sender_public: self.sender_public.clone(), phantom: self.phantom.clone() }
+    }
+}
+impl<C,E> Debug for EcdhAuthEncapsulator<C,E>
+where C: CurveArithmetic+PointCompression
+{
+    fn fmt(&self, _sf: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         todo!()
     }
 }
 
-impl<C, DE,G, S> Decapsulator for EcdhDecapsulator<C,DE,S,G>
-where C: Sync + Send,
-    C: CurveArithmetic+PointCompression,
-    C::FieldBytesSize: ModulusSize,
-    C::AffinePoint: FromSec1Point<C> + ToSec1Point<C>,
-    
-    DE: Sync + Send + 'static,
-    DE: EncodeGenericArray<PublicKey<C>> + DecodeSlice<PublicKey<C>> + DecodeSlice<SecretKey<C>> + EncodeGenericArray<SecretKey<C>>, 
-    <DE as EncodeGenericArray<PublicKey<C>>>::EncodedLen: ArraySize,    
-    <DE as DecodeSlice<PublicKey<C>>>::Error: Debug,
-    //S: SecretPointToBytes<C>,
-    S: EncodeHybridArray<AffinePoint<C>> + Send + Sync + 'static,
-    G: Send + Sync + 'static,
+impl<C,E> Eq for EcdhAuthEncapsulator<C,E>
+where C: CurveArithmetic+PointCompression,
+{}
+impl<C,DE> PartialEq for EcdhAuthEncapsulator<C,DE>
+where C: CurveArithmetic+PointCompression,
 {
-    type Kem = EcdhKem<C,DE,G, S>;
-
-    fn encapsulation_key(&self) -> &kem::EncapsulationKey<Self::Kem> {
+    fn eq(&self, _other: &Self) -> bool {
         todo!()
+    }
+}
+
+
+
+impl<C,E> Copy for EcdhAuthCapsulator<C,E>
+{}
+impl<C,DE> Clone for EcdhAuthCapsulator<C,DE>
+{
+    fn clone(&self) -> Self {
+        todo!()
+    }
+}
+impl<C,DE> Ord for EcdhAuthCapsulator<C,DE>
+{
+    fn cmp(&self, _other: &Self) -> std::cmp::Ordering {
+        todo!()
+    }
+}
+impl<C,DE> Eq for EcdhAuthCapsulator<C,DE>
+{
+    
+}
+impl<C,DE> Debug for EcdhAuthCapsulator<C,DE>
+{
+    fn fmt(&self, _f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        todo!()
+    }
+}
+impl<C,DE> Default for EcdhAuthCapsulator<C,DE>
+{
+    fn default() -> Self {
+        Self(Default::default(), Default::default())
+    }
+}
+impl<C,DE> PartialOrd for EcdhAuthCapsulator<C,DE>
+{
+    fn partial_cmp(&self, _other: &Self) -> Option<std::cmp::Ordering> {
+        todo!()
+    }
+}
+impl<C,DE> PartialEq for EcdhAuthCapsulator<C,DE>
+{
+    fn eq(&self, _other: &Self) -> bool {
+        todo!()
+    }
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+impl<C, DE> Kem for EcMqvAuthKem<C,DE>
+where 
+    DE: EcEncode<C>  + Send + Sync + 'static,
+    C: CurveArithmetic+PointCompression + PrimeCurve,
+    C::FieldBytesSize: ModulusSize,
+    C::AffinePoint: ToSec1Point<C> + FromSec1Point<C>,    
+{
+    type EncapsulationKey = EcMqvAuthEncapsulator<C,DE>;
+    type DecapsulationKey = EcMqvAuthDecapsulator<C,DE>;
+    type CiphertextSize = <DE as EcEncode<C>>::PublicKeyLen;
+    type SharedKeySize = C::FieldBytesSize;
+}
+
+
+impl<C, DE> Encapsulate for EcMqvAuthEncapsulator<C,DE> 
+where C: CurveArithmetic + PointCompression,
+    DE: EcEncode<C> + Send + Sync + 'static,
+    C: CurveArithmetic+PointCompression + PrimeCurve,
+    C::FieldBytesSize: ModulusSize,
+    C::AffinePoint: ToSec1Point<C> + FromSec1Point<C>,   
+{
+    type Kem = EcMqvAuthKem<C,DE>;
+
+    fn encapsulate_with_rng<R>(&self, _rng: &mut R) -> (Ciphertext<Self::Kem>, SharedKey<Self::Kem>)
+    where
+        R: rand::prelude::CryptoRng + ?Sized {
+        todo!()
+    }
+}
+impl<C, DE> Decapsulator for EcMqvAuthDecapsulator<C,DE> 
+where  DE: EcEncode<C> + Send + Sync + 'static,
+    C: CurveArithmetic+PointCompression + PrimeCurve,
+    C::FieldBytesSize: ModulusSize,
+    C::AffinePoint: ToSec1Point<C> + FromSec1Point<C>, 
+{
+    type Kem = EcMqvAuthKem<C,DE>;
+
+    fn encapsulation_key(&self) -> &EncapsulationKey<Self::Kem> {
+        &self.encapsulation_key
+    }
+}
+impl<C, DE> Decapsulate for EcMqvAuthDecapsulator<C,DE> 
+where DE: EcEncode<C>  + Send + Sync + 'static,
+    C: CurveArithmetic+PointCompression + PrimeCurve,
+    C::FieldBytesSize: ModulusSize,
+    C::AffinePoint: ToSec1Point<C> + FromSec1Point<C>, 
+{
+    fn decapsulate(&self, ct: &Ciphertext<Self::Kem>) -> SharedKey<Self::Kem> {
+        let encapped_key = PublicKey::<C>::from_sec1_bytes(&ct.as_slice()).unwrap();
+        
+        let raw_shared_secret = elliptic_curve::group::Curve::to_affine(&mqv2 ( &self.recipient_private, &self.recipient_private, &self.encapsulation_key.sender_public, &encapped_key ));
+        raw_shared_secret.x()
+    }
+}
+impl<C, DE> Generate for EcMqvAuthDecapsulator<C,DE> 
+where C: CurveArithmetic + PointCompression,
+{
+    fn try_generate_from_rng<R: rand::TryCryptoRng + ?Sized>(_rng: &mut R) -> Result<Self, R::Error> {
+        todo!()
+    }
+}
+
+impl<C, E> KeySizeUser for EcMqvAuthEncapsulator<C,E> 
+where C: CurveArithmetic + PointCompression,
+    E: EcEncode<C>
+{
+    type KeySize = E::PublicKeyLen;
+}
+impl<C, E> KeyExport for EcMqvAuthEncapsulator<C,E> 
+where C: CurveArithmetic + PointCompression,
+    E: EcEncode<C>,
+{
+    fn to_bytes(&self) -> Key<Self> {
+        todo!()
+    }
+}
+impl<C, E> TryKeyInit for EcMqvAuthEncapsulator<C,E> 
+where C: CurveArithmetic + PointCompression,
+    E: EcEncode<C>,
+{
+    fn new(_key: &Key<Self>) -> Result<Self, InvalidKey> {
+        todo!()
+    }
+}
+
+impl<C, E> Clone for EcMqvAuthEncapsulator<C,E> 
+where C: CurveArithmetic + PointCompression
+{
+    fn clone(&self) -> Self {
+        Self { sender_private: self.sender_private.clone(), recipient_public: self.recipient_public.clone(), sender_public: self.sender_public.clone(), phantom: self.phantom.clone() }
+    }
+}
+impl<C, DE> Debug for EcMqvAuthEncapsulator<C,DE> 
+where C: CurveArithmetic + PointCompression
+{
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("EcMqvAuthEncapsulator").field("sender_private", &self.sender_private).field("recipient_public", &self.recipient_public).field("phantom", &self.phantom).finish()
+    }
+}
+impl<C, E> EncapsulateDeterministic for EcMqvAuthEncapsulator<C,E> 
+where E: EcEncode<C> + Send + Sync + 'static,
+    C: CurveArithmetic+PointCompression + PrimeCurve,
+    C::FieldBytesSize: ModulusSize,
+    C::AffinePoint: ToSec1Point<C> + FromSec1Point<C>,    
+{
+    type Kem = EcMqvAuthKem<C,E>;
+    type SeedSize = C::FieldBytesSize;
+
+    fn encapsulate_deterministic(&self, seed: &[u8]) -> (Ciphertext<Self::Kem>, SharedKey<Self::Kem>) {
+        let seed = Array::try_from(seed).unwrap();
+        let ephemeral_prv = SecretKey::<C>::from_bytes(&seed).unwrap();
+        let ephemeral_pub = ephemeral_prv.public_key();
+
+        let raw_shared_secret = mqv2 ( &self.sender_private.as_ref().unwrap(), &ephemeral_prv, &self.recipient_public, &self.recipient_public);
+        let raw_shared_secret = elliptic_curve::group::Curve::to_affine(&raw_shared_secret);
+        
+        let encapsulated_key = E::encode_public_key(&ephemeral_pub);
+
+        (encapsulated_key.try_into().unwrap(), raw_shared_secret.x())
+    }
+}
+
+impl<C, E> Ord for EcMqvAuthEncapsulator<C,E> 
+where C: CurveArithmetic + PointCompression
+{
+    fn cmp(&self, _other: &Self) -> std::cmp::Ordering {
+        todo!()
+    }
+}
+impl<C, DE> PartialOrd for EcMqvAuthEncapsulator<C,DE> 
+where C: CurveArithmetic + PointCompression
+{
+    fn partial_cmp(&self, _other: &Self) -> Option<std::cmp::Ordering> {
+        todo!()
+    }
+}
+impl<C, DE> Eq for EcMqvAuthEncapsulator<C,DE> 
+where C: CurveArithmetic + PointCompression
+{}
+impl<C, DE> PartialEq for EcMqvAuthEncapsulator<C,DE> 
+where C: CurveArithmetic + PointCompression
+{
+    fn eq(&self, other: &Self) -> bool {
+        self.sender_private == other.sender_private && self.recipient_public == other.recipient_public && self.phantom == other.phantom
+    }
+}
+
+
+impl<C, DE> Ord for EcMqvAuthKem<C,DE> {
+    fn cmp(&self, _other: &Self) -> std::cmp::Ordering {
+        todo!()
+    }
+}
+impl<C, DE> PartialOrd for EcMqvAuthKem<C,DE> {
+    fn partial_cmp(&self, _other: &Self) -> Option<std::cmp::Ordering> {
+        todo!()
+    }
+}
+impl<C, DE> Eq for EcMqvAuthKem<C,DE> {}
+impl<C, DE> Copy for EcMqvAuthKem<C,DE> {}
+impl<C, DE> Clone for EcMqvAuthKem<C,DE> {
+    fn clone(&self) -> Self {
+        Self(self.0.clone(), self.1.clone())
+    }
+}
+impl<C, DE> Default for EcMqvAuthKem<C,DE> {
+    fn default() -> Self {
+        Self(Default::default(), Default::default())
+    }
+}
+impl<C, DE> std::fmt::Debug for EcMqvAuthKem<C,DE> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("EcMqvAuthCapsulator").field(&self.0).field(&self.1).finish()
+    }
+}
+impl<C, DE> PartialEq for EcMqvAuthKem<C,DE> {
+    fn eq(&self, other: &Self) -> bool {
+        self.0 == other.0 && self.1 == other.1
     }
 }

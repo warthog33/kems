@@ -1,11 +1,12 @@
-use std::convert::Infallible;
-use std::{borrow::Cow, marker::PhantomData};
-use cipher::{Array, KeySizeUser, array::ArraySize, common::KeyExport, KeyInit};
-use std::array::TryFromSliceError;
-use generic_array::GenericArray;
-use kdfs::Kdf;
-use crate::{Capsulator, Decapsulate, DecodeGenericArray, Encapsulate, EncapsulateDeterministic2, FromKey, FromKeys, GenerateDeterministic4};
-use crate::{GenerateDeterministic3, GetEncapsulator, GetRecipientPublicKeyBytes, GetSenderPublicKeyBytes, SetKdf};
+
+
+use std::iter::once;
+use std::{marker::PhantomData, fmt::Debug};
+use cipher::{Array, KeySizeUser, array::ArraySize, common::KeyExport, KeyInit, common::TryKeyInit};
+use kem::{Ciphertext, Decapsulate, Decapsulator, Encapsulate, FromSeed, Generate, InvalidKey, Kem, SharedKey, TryDecapsulate};
+use kdfs::{Kdf};
+use crate::{EncapsulateDeterministic, FromKey, FromKeys};
+use crate::{SetKdf};
 
 
 ///
@@ -14,14 +15,13 @@ use crate::{GenerateDeterministic3, GetEncapsulator, GetRecipientPublicKeyBytes,
 /// The structure includes some fields set at init time which means the object can be passed around to functions 
 /// accepting the KdfWithContext trait and it will derive keys properly 
 ///
-/// The following example is from Appendix C of RFC 7518. The curve parameter is not strictly needed for this example, as the secret derivation is not required.
+/// The following example is from Appendix C of RFC 7518. The curve parameter is not strictly needed for this example, as the secret key derivation is not required.
 /// ```
 /// use kems::kem_with_kdf::JwaKdf;
 /// use kdfs::nistsp800_56::ConcatKdf;
+/// use kdfs::hybrid_array::{Array, typenum::consts::*};
 /// use kdfs::Kdf;
 /// use sha2::Sha256;
-/// use p256::NistP256;
-/// use kems::generic_array::typenum::consts::*;
 /// 
 /// let secret = [158, 86, 217, 29, 129, 113, 53, 211, 114, 131, 66, 131, 191, 132, 38, 156, 251, 49, 110, 163, 218, 128, 106, 72, 246, 218, 167, 121, 140, 254, 144, 196];
 /// let algorithm_id = b"A128GCM";
@@ -30,102 +30,112 @@ use crate::{GenerateDeterministic3, GetEncapsulator, GetRecipientPublicKeyBytes,
 /// let exp_result = [86, 170, 141, 234, 248, 35, 109, 32, 92, 34, 40, 205, 113, 167, 16, 26];
 /// 
 /// let mut kdf = JwaKdf::<ConcatKdf<Sha256>,true>::new(algorithm_id, party_u_info, party_v_info);
-/// let result = kdf.derive_self_secret_other::<U16> ( &secret, &[]).unwrap();
+/// let result: Array<u8, U16> = kdf.derive_self_secret_other( &secret, &[]);
 /// 
 /// assert! ( result == exp_result)
 /// ```
 #[derive(Clone)]
-//pub struct JwaKdf<'a, H: Digest>{
-pub struct JwaKdf<'a, K: Kdf, const INCLUDE_KEY_LEN: bool> {
-    algorithm_id: &'a [u8],
-    party_u_info: &'a [u8],
-    party_v_info: &'a [u8],
+pub struct JwaKdf<K, const INCLUDE_KEY_LEN: bool> {
+    algorithm_id: Vec<u8>,
+    party_u_info: Vec<u8>,
+    party_v_info: Vec<u8>,
     phantom: PhantomData<K>,
 }
 
-
-//impl<'a, H: Digest> JwaKdf<'a, H> {
-impl<'a, K: Kdf, const INCLUDE_KEY_LEN: bool> JwaKdf<'a, K, INCLUDE_KEY_LEN> {
+impl<K, const INCLUDE_KEY_LEN: bool> JwaKdf<K, INCLUDE_KEY_LEN> {
     /// Create a new object with the static fields recorded for later use in derivation
-    pub fn new(algorithm_id: &'a [u8], party_u_info: &'a [u8], party_v_info: &'a [u8] ) -> Self{
-        return JwaKdf { algorithm_id, party_u_info, party_v_info, phantom: PhantomData }
+    pub fn new(algorithm_id: impl AsRef<[u8]>, party_u_info: impl AsRef<[u8]>, party_v_info: impl AsRef<[u8]>) -> Self {
+        Self {
+            algorithm_id: algorithm_id.as_ref().to_vec(),
+            party_u_info: party_u_info.as_ref().to_vec(),
+            party_v_info: party_v_info.as_ref().to_vec(),
+            phantom: PhantomData,
+        }
     }
 }
-//impl<'a, H: Digest + FixedOutputReset> Default for JwaKdf<'a, H>
-impl<'a, K: Kdf, const INCLUDE_KEY_LEN: bool> Default for JwaKdf<'a, K, INCLUDE_KEY_LEN>
+impl<K, const INCLUDE_KEY_LEN: bool> Default for JwaKdf<K, INCLUDE_KEY_LEN>
 {
     fn default() -> Self {
         Self { algorithm_id: Default::default(), party_u_info: Default::default(), party_v_info: Default::default(), phantom: Default::default() }
     }
 }
 
-//impl<'c, H: Digest + FixedOutputReset> Kdf for JwaKdf<'c, H>
-impl<'c, K: Kdf + Default, const INCLUDE_KEY_LEN: bool> Kdf for JwaKdf<'c, K, INCLUDE_KEY_LEN>
+// impl<K: KdfSlice + Default, const INCLUDE_KEY_LEN: bool> KdfSlice for JwaKdf<K, INCLUDE_KEY_LEN>
+// {
+//     fn derive_self_secrets_others_into<'a,'b> ( &self, secret: impl IntoIterator<Item=&'a[u8]> + Clone, _other_data: impl IntoIterator<Item=&'b[u8]> + Clone, out: &mut [u8]) -> Result<(), kdfs::Error> {
+//         let algorithm_id_len = (self.algorithm_id.len() as u32 ).to_be_bytes();
+//         let party_u_info_len = (self.party_u_info.len() as u32 ).to_be_bytes();
+//         let party_v_info_len = (self.party_v_info.len() as u32 ).to_be_bytes();
+//         if INCLUDE_KEY_LEN {
+//             let key_len = ((out.len() as u32 )* 8).to_be_bytes();
+//             K::default().derive_self_secrets_others_into ( secret, [&algorithm_id_len[..], &self.algorithm_id[..], &party_u_info_len[..], &self.party_u_info[..], &party_v_info_len[..], &self.party_v_info[..], &key_len], out )
+//         } else {
+//             K::default().derive_self_secrets_others_into ( secret, [&algorithm_id_len[..], &self.algorithm_id[..], &party_u_info_len[..], &self.party_u_info[..], &party_v_info_len[..], &self.party_v_info[..]], out )
+//         }
+//     }
+// }
+
+impl<K: Kdf<L> + Default, const INCLUDE_KEY_LEN: bool, L: ArraySize> Kdf<L> for JwaKdf<K, INCLUDE_KEY_LEN>
 {
-    fn derive_self_secrets_others_into<'a,'b> ( &self, secret: impl IntoIterator<Item=&'a[u8]> + Clone, _other_data: impl IntoIterator<Item=&'b[u8]> + Clone, out: &mut [u8]) -> Result<(), kdfs::Error> {
+    fn derive_self_secrets_others<'a,'b> ( &self, secret: impl IntoIterator<Item=&'a[u8]> + Clone, _other_data: impl IntoIterator<Item=&'b[u8]> + Clone) -> Array<u8, L> {
         let algorithm_id_len = (self.algorithm_id.len() as u32 ).to_be_bytes();
         let party_u_info_len = (self.party_u_info.len() as u32 ).to_be_bytes();
         let party_v_info_len = (self.party_v_info.len() as u32 ).to_be_bytes();
         if INCLUDE_KEY_LEN {
-            let key_len = ((out.len() as u32 )* 8).to_be_bytes();
-            K::default().derive_self_secrets_others_into ( secret, [&algorithm_id_len, self.algorithm_id, &party_u_info_len, self.party_u_info, &party_v_info_len, self.party_v_info, &key_len], out )
+            let key_len = (L::U32 * 8).to_be_bytes();
+            K::default().derive_self_secrets_others(secret, [&algorithm_id_len[..], &self.algorithm_id[..], &party_u_info_len[..], &self.party_u_info[..], &party_v_info_len[..], &self.party_v_info[..], &key_len])
         } else {
-            K::default().derive_self_secrets_others_into ( secret, [&algorithm_id_len, self.algorithm_id, &party_u_info_len, self.party_u_info, &party_v_info_len, self.party_v_info], out )
+            K::default().derive_self_secrets_others ( secret, [&algorithm_id_len[..], &self.algorithm_id[..], &party_u_info_len[..], &self.party_u_info[..], &party_v_info_len[..], &self.party_v_info[..]])
         }
     }
 }
 
 
+/// A combiner inputs the shared secret, ciphertext and public key/s and pushes it through a KDF to derive an output key
+pub trait Combiner {
+    //fn combine<L: ArraySize, K: KdfSlice>(raw_shared_secret: impl AsRef<[u8]>, ephemeral_pub: impl AsRef<[u8]>, encapsulator: &impl KeyExport, kdf: &K ) -> Result<Array<u8, L>, ()>;
+    fn combine<L: ArraySize, K: Kdf<L>>(raw_shared_secret: impl AsRef<[u8]>, ephemeral_pub: impl AsRef<[u8]>, encapsulator: &impl KeyExport, kdf: &K ) -> Result<Array<u8, L>, ()>;
+}
 
 
 
+///
+/// Combiner which includes the ciphertext (ephemeral public key) but not the public key/s.
+/// Used by ECIES-KEM in ISO 18033-2, Apples ECIES implementation and EMVCo ECC DH implementation used in kernel C8
+/// 
+#[derive(Debug, Default, Ord, PartialEq, PartialOrd, Eq, Copy, Clone)]
+pub struct CombinerCiphertext;
 
-pub struct CombinerNoKeys;
-pub struct CombinerEphemOnly;
+impl Combiner for CombinerCiphertext {
+    fn combine<L: ArraySize, K: Kdf<L>>(raw_shared_secret: impl AsRef<[u8]>, ciphertext: impl AsRef<[u8]>, _encapsulator: &impl KeyExport, kdf: &K ) -> Result<Array<u8, L>, ()> {
+        Ok(kdf.derive_self_secret_other(raw_shared_secret.as_ref(), ciphertext.as_ref()))
+    }
+}
 
-#[derive(Debug, Default, std::cmp::Ord, std::cmp::PartialEq, std::cmp::PartialOrd, std::cmp::Eq, Copy, Clone)]
+
+///
+/// Combiner which includes public key/s and ciphertext.
+/// Used by HPKE, GPG and often with X25519 KEMs
+/// 
+#[derive(Debug, Default, Ord, PartialEq, PartialOrd, Eq, Copy, Clone)]
 pub struct CombinerAllPubKeys;
 
-pub trait Combiner {
-    fn combine<L: ArraySize, K: Kdf, E>(raw_shared_secret: impl AsRef<[u8]>, ephemeral_pub: impl AsRef<[u8]>, encapsulator: &E, kdf: &K ) -> Result<Array<u8, L>, ()>
-    where E: GetRecipientPublicKeyBytes;
-}
-pub trait AuthCombiner {
-    fn combine<L: ArraySize, K: Kdf, E>(raw_shared_secret: impl AsRef<[u8]>, ephemeral_pub: impl AsRef<[u8]>, encapsulator: &E, kdf: &K ) -> Result<Array<u8, L>, ()>
-    where E: GetSenderPublicKeyBytes + GetRecipientPublicKeyBytes;
+impl Combiner for CombinerAllPubKeys {
+    fn combine<L: ArraySize, K: Kdf<L>>(raw_shared_secret: impl AsRef<[u8]>, ciphertext: impl AsRef<[u8]>, encapsulator: &impl KeyExport, kdf: &K ) -> Result<Array<u8, L>,()> {
+        Ok(kdf.derive_self_secret_others(raw_shared_secret.as_ref(), [ciphertext.as_ref(), &encapsulator.to_bytes()]))
+    }
 }
 
-
+///
+/// Combiner which does not include any public keys or ciphertexts.
+/// Used by NIST, X9 and CMS
+/// 
+#[derive(Debug, Default, Ord, PartialEq, PartialOrd, Eq, Copy, Clone)]
+pub struct CombinerNoKeys;
 
 impl Combiner for CombinerNoKeys {
-    fn combine<L: ArraySize, K: Kdf, E>(raw_shared_secret: impl AsRef<[u8]>, _ephemeral_pub: impl AsRef<[u8]>, _encapsulator: &E, kdf: &K ) -> Result<Array<u8, L>, ()> {
-        kdf.derive_self_secret_other(raw_shared_secret.as_ref(), &[]).map_err(|_|())
-    }
-}
-impl AuthCombiner for CombinerNoKeys {
-    fn combine<L: ArraySize, K: Kdf, E>(raw_shared_secret: impl AsRef<[u8]>, _ephemeral_pub: impl AsRef<[u8]>, _encapsulator: &E, kdf: &K ) -> Result<Array<u8, L>, ()> {
-        kdf.derive_self_secret_other(raw_shared_secret.as_ref(), &[]).map_err(|_|())
-    }
-}
-impl Combiner for CombinerEphemOnly {
-    fn combine<L: ArraySize, K: Kdf, E>(raw_shared_secret: impl AsRef<[u8]>, ephemeral_pub: impl AsRef<[u8]>, _encapsulator: &E, kdf: &K ) -> Result<Array<u8, L>, ()> {
-        kdf.derive_self_secret_other(raw_shared_secret.as_ref(), ephemeral_pub.as_ref()).map_err(|_|())
-    }
-}
-
-impl Combiner for CombinerAllPubKeys {
-    fn combine<L: ArraySize, K: Kdf, E: GetRecipientPublicKeyBytes>(raw_shared_secret: impl AsRef<[u8]>, ephemeral_pub: impl AsRef<[u8]>, encapsulator: &E, kdf: &K ) -> Result<Array<u8, L>,()> {
-        kdf.derive_self_secret_others(raw_shared_secret.as_ref(), [ephemeral_pub.as_ref(), &encapsulator.get_recipient_public_key_bytes()]).map_err(|_|())
-    }
-}
-impl AuthCombiner for CombinerAllPubKeys {
-    fn combine<L: ArraySize, K: Kdf, E>(raw_shared_secret: impl AsRef<[u8]>, ephemeral_pub: impl AsRef<[u8]>, encapsulator: &E, kdf: &K ) -> Result<Array<u8, L>,()> 
-    where E: GetSenderPublicKeyBytes + GetRecipientPublicKeyBytes
-    {
-        let sender_public_key_bytes = encapsulator.get_sender_public_key_bytes(); //GetSenderPublicKeyBytes
-        let recipient_public_key_bytes = encapsulator.get_recipient_public_key_bytes(); //GetSenderPublicKeyBytes
-
-        kdf.derive_self_secret_others(raw_shared_secret.as_ref(), [ephemeral_pub.as_ref(), &recipient_public_key_bytes, &sender_public_key_bytes ]).map_err(|_|())
+    fn combine<L: ArraySize, K: Kdf<L>>(raw_shared_secret: impl AsRef<[u8]>, _ciphertext: impl AsRef<[u8]>, _encapsulator: &impl KeyExport, kdf: &K ) -> Result<Array<u8, L>, ()> {
+        Ok(kdf.derive_self_secret_other(raw_shared_secret.as_ref(), &[]))
     }
 }
 
@@ -136,19 +146,24 @@ impl AuthCombiner for CombinerAllPubKeys {
 /// - HKDF
 /// This implementation has a generic parameter which allows for any regular Kdf to be used
 /// 
-pub struct EcCombinerOpenPgp<K:Kdf> (PhantomData<K>);
-impl<K: Kdf + Default> Default for EcCombinerOpenPgp<K>{
-    fn default() -> Self {
-        Self(Default::default())
-    }
-}
+#[derive(Default, Clone)]
+pub struct EcKdfOpenPgp<K> (PhantomData<K>);
 
-impl<K:Kdf + Default> Kdf for EcCombinerOpenPgp<K>
+// impl<K:KdfSlice + Default> KdfSlice for EcKdfOpenPgp<K>
+// {
+//     fn derive_self_secrets_others_into<'a,'b> ( &self, secret: impl IntoIterator<Item=&'a[u8]> + Clone, other_data: impl IntoIterator<Item=&'b[u8]> + Clone, out: &mut [u8]) -> Result<(), kdfs::Error> {
+//         let secrets : Vec<_>= secret.into_iter().collect();
+//         let other_data: Vec<_> = other_data.into_iter().collect();
+//         K::default().derive_self_secrets_other_into([other_data[0], other_data[1], secrets[0]], b"OpenPGP X25519", out)
+//     }
+// }
+impl<K:Kdf<L> + Default, L: ArraySize> Kdf<L> for EcKdfOpenPgp<K>
 {
-    fn derive_self_secrets_others_into<'a,'b> ( &self, secret: impl IntoIterator<Item=&'a[u8]> + Clone, other_data: impl IntoIterator<Item=&'b[u8]> + Clone, out: &mut [u8]) -> Result<(), kdfs::Error> {
+    
+    fn derive_self_secrets_others<'a,'b> ( &self, secret: impl IntoIterator<Item=&'a[u8]> + Clone, other_data: impl IntoIterator<Item=&'b[u8]> + Clone) -> Array<u8, L> {
         let secrets : Vec<_>= secret.into_iter().collect();
         let other_data: Vec<_> = other_data.into_iter().collect();
-        K::default().derive_self_secrets_other_into([other_data[0], other_data[1], secrets[0]], b"OpenPGP X25519", out)
+        K::default().derive_self_secrets_others([other_data[0], other_data[1], secrets[0]], once(b"OpenPGP X25519".as_slice()))
     }
 }
 
@@ -162,6 +177,7 @@ impl<K:Kdf + Default> Kdf for EcCombinerOpenPgp<K>
 ///  L: Length of output
 /// 
 /// 
+#[derive(Default)]
 pub struct KemWithKdf<KEM,COM,KDF,L> 
 (
     PhantomData<KEM>,
@@ -169,28 +185,28 @@ pub struct KemWithKdf<KEM,COM,KDF,L>
     PhantomData<KDF>,
     PhantomData<L>
 );
-impl<KEM,COM,KDF,L> std::fmt::Debug for KemWithKdf<KEM,COM,KDF,L>
+impl<KEM,COM,KDF,L> Debug for KemWithKdf<KEM,COM,KDF,L>
 {
     fn fmt(&self, _f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         todo!()
     }
 }
-impl<KEM,COM,KDF,L> std::cmp::PartialOrd for KemWithKdf<KEM,COM,KDF,L>
+impl<KEM,COM,KDF,L> PartialOrd for KemWithKdf<KEM,COM,KDF,L>
 {
     fn partial_cmp(&self, _other: &Self) -> Option<std::cmp::Ordering> {
         todo!()
     }
 }
-impl<KEM,COM,KDF,L> std::cmp::PartialEq for KemWithKdf<KEM,COM,KDF,L>
+impl<KEM,COM,KDF,L> PartialEq for KemWithKdf<KEM,COM,KDF,L>
 {
     fn eq(&self, _other: &Self) -> bool {
         todo!()
     }
 }
-impl<KEM,COM,KDF,L> std::cmp::Eq for KemWithKdf<KEM,COM,KDF,L>
+impl<KEM,COM,KDF,L> Eq for KemWithKdf<KEM,COM,KDF,L>
 {
 }
-impl<KEM,COM,KDF,L> std::cmp::Ord for KemWithKdf<KEM,COM,KDF,L>
+impl<KEM,COM,KDF,L> Ord for KemWithKdf<KEM,COM,KDF,L>
 {
     fn cmp(&self, _other: &Self) -> std::cmp::Ordering {
         todo!()
@@ -206,80 +222,28 @@ impl<KEM,COM,KDF,L> Clone for KemWithKdf<KEM,COM,KDF,L>
         todo!()
     }
 }
-impl<KEM,COM,KDF,L> Default for KemWithKdf<KEM,COM,KDF,L>
-{
-    fn default() -> Self {
-        Self(PhantomData, PhantomData, PhantomData, PhantomData)
-    }
-}
 
 
 
-impl<KEM, COM, KDF,L> Capsulator for KemWithKdf<KEM,COM,KDF,L>
-where KEM: Capsulator,
-    KDF: Kdf + Default,
-    L: ArraySize,
-    COM: Combiner,
-    <KEM as Capsulator>::Encapsulator: GetRecipientPublicKeyBytes,
-    <KEM as Capsulator>::Decapsulator: GetRecipientPublicKeyBytes,
-{
-    type Encapsulator = KemWithKdfEncapsulator<KEM, COM, KDF, L>;
-    type Decapsulator = KemWithKdfDecapsulator<KEM, COM, KDF, L>;
-    type SharedKeySize = L;
-    type CiphertextSize = KEM::CiphertextSize;
 
-    fn generate_from_rng ( rng: &mut impl rand_core::CryptoRngCore ) -> (Self::Encapsulator, Self::Decapsulator) {
-        let (encapsulator, decapsulator) = KEM::generate_from_rng(rng);
-        (Self::Encapsulator{encapsulator, kdf: KDF::default(), phantom:PhantomData, phantom2: PhantomData}, Self::Decapsulator{decapsulator, kdf: KDF::default(), phantom: PhantomData, phantom2: PhantomData})
-    }
-}
-
-impl<KEM, COM, KDF, L> kem::Kem for KemWithKdf<KEM,COM,KDF,L>
-where KEM: Capsulator, // Required by KemWithKdfDecapsulator and KemWithKdfEncapsulator
-    KEM: kem::Kem<CiphertextSize = <<KEM::Encapsulator as kem::Encapsulate>::Kem as kem::Kem>::CiphertextSize>,
-    KEM::Encapsulator: kem::Encapsulate + KeySizeUser + KeyExport + KeyInit + std::cmp::Eq + Clone + std::fmt::Debug + GetRecipientPublicKeyBytes,
-    KEM::EncapsulationKey: kem::Encapsulate, // + KeySizeUser + KeyExport + KeyInit + std::cmp::Eq + Clone + Copy + std::fmt::Debug + GetRecipientPublicKeyBytes,
-    
-    COM: Combiner + std::fmt::Debug + std::cmp::Ord + Default + Copy + Sync + Send + 'static,
-    KDF: Default + std::fmt::Debug + Sync + Clone + Send + 'static,
-    L: ArraySize + std::cmp::Ord + Sync + Send,
-    
-    //KEM::Decapsulator: KeySizeUser + KeyExport + KeyInit + std::cmp::Eq + Clone + Copy + std::fmt::Debug + GetRecipientPublicKeyBytes,
-    KDF: Kdf + std::fmt::Debug + Default + Sync + Send + 'static,
-    KEM::Decapsulator: GetRecipientPublicKeyBytes,
-    
-    //<KEM as ml_kem::Kem>::EncapsulationKey: ml_kem::Encapsulate,
+impl<KEM, COM, KDF, L> Kem for KemWithKdf<KEM,COM,KDF,L>
+where KEM: Kem,
+    KEM::EncapsulationKey: Encapsulate + Eq + Clone + Debug,
+    COM: Combiner + Debug + Ord + Default + Copy + Sync + Send + 'static,
+    KDF: Kdf<L> + Default + Sync + Clone + Send + 'static,
+    L: ArraySize + Ord + Sync + Send,
 {
     type DecapsulationKey = KemWithKdfDecapsulator<KEM, COM, KDF, L>;
     type EncapsulationKey = KemWithKdfEncapsulator<KEM, COM, KDF, L>;
     type SharedKeySize = L;
     type CiphertextSize = <KEM as kem::Kem>::CiphertextSize;
-}
 
-
-impl<KEM, COM, KDF, L> GenerateDeterministic3 for KemWithKdf<KEM,COM,KDF,L>
-where KEM: GenerateDeterministic3,
-    KEM: Capsulator<Encapsulator=<KEM as GenerateDeterministic3>::Public, Decapsulator=<KEM as GenerateDeterministic3>::Private>,
-    KDF: Kdf + Default,
-    L: ArraySize,
-    COM: Combiner,
-    <KEM as Capsulator>::Encapsulator: GetRecipientPublicKeyBytes,
-    <KEM as Capsulator>::Decapsulator: GetRecipientPublicKeyBytes,
-    KEM::Decapsulator: GenerateDeterministic4 + GetEncapsulator<Encapsulator=KEM::Encapsulator>,
-{
-    //type SeedSize = KEM::SeedSize;
-    type SeedSize = <KEM::Decapsulator as GenerateDeterministic4>::SeedSize;
-    type Public = <Self as Capsulator>::Encapsulator;
-    type Private = <Self as Capsulator>::Decapsulator;
-    type Error = ();
-
-    fn generate_deterministic(seed: &Array::<u8, Self::SeedSize>) -> Result<(Self::Public, Self::Private), Self::Error> {
-        // let (encapsulator, decapsulator) = KEM::generate_deterministic(seed).map_err(|_|())?;
-        // Ok((Self::Public{encapsulator, kdf: KDF::default(), phantom:PhantomData, phantom2: PhantomData}, 
-        //     Self::Private{decapsulator, kdf: KDF::default(), phantom: PhantomData, phantom2: PhantomData}))
-        let Ok(decapsulator) = KemWithKdfDecapsulator::<KEM,COM,KDF,L>::generate_deterministic(seed) else { panic! ( "unhandled")};
-        let encapsulator = decapsulator.encapsulation_key();
-        Ok ((encapsulator, decapsulator))
+    fn generate_keypair_from_rng<R: rand::prelude::CryptoRng>( rng: &mut R, ) -> (kem::DecapsulationKey<Self>, kem::EncapsulationKey<Self>)
+    {
+        let (decapsulator, encapsulator) = KEM::generate_keypair_from_rng(rng);
+        let encapsulation_key = Self::EncapsulationKey{encapsulator: encapsulator.clone(), kdf: KDF::default(), phantom:PhantomData, phantom2: PhantomData};
+        (Self::DecapsulationKey{decapsulator, encapsulation_key, kdf: KDF::default()},
+            Self::EncapsulationKey{encapsulator, kdf: KDF::default(), phantom:PhantomData, phantom2: PhantomData})
     }
 }
 
@@ -293,88 +257,49 @@ where KEM: GenerateDeterministic3,
 /// 
 //#[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub struct KemWithKdfEncapsulator<KEM,COM,KDF,N>
-where KEM: Capsulator
+where KEM: Kem
 {
-    pub encapsulator: KEM::Encapsulator,
+    pub encapsulator: KEM::EncapsulationKey,
     kdf: KDF,
     phantom: PhantomData<N>,
     phantom2: PhantomData<COM>
 }
 
-impl<KEM, COM, KDF, N> Encapsulate<GenericArray::<u8, KEM::CiphertextSize>, Array::<u8, N>> for KemWithKdfEncapsulator<KEM,COM,KDF,N>
-where KEM: Capsulator,
-    KDF: Kdf,
-    N: ArraySize,
-    COM: Combiner,
-    KEM::Encapsulator: GetRecipientPublicKeyBytes
-{
-    type Error = ();
-    
-    fn encapsulate(&self, rng: &mut impl rand_core::CryptoRngCore) -> Result<(GenericArray::<u8, KEM::CiphertextSize>, Array::<u8, N>), Self::Error> {
-        let (ciphertext, raw_shared_secret) = self.encapsulator.encapsulate(rng).unwrap();
-        let shared_secret = COM::combine(raw_shared_secret, &ciphertext, &self.encapsulator, &self.kdf)?;
-        Ok((ciphertext, shared_secret))
-    }
-}
+
 
 impl<KEM, COM, KDF, N> kem::Encapsulate for KemWithKdfEncapsulator<KEM,COM,KDF,N>
-where KEM: Capsulator + kem::Kem<CiphertextSize = <<<KEM as Capsulator>::Encapsulator as kem::Encapsulate>::Kem as kem::Kem>::CiphertextSize>,
-
-   //expected  <KEM as Kem>::CiphertextSize>
-   //found struct `<<<KEM as Capsulator>::Encapsulator as ml_kem::Encapsulate>::Kem as Kem>::CiphertextSize>
-
-    N: ArraySize + std::cmp::Ord + Sync + Send,
-    COM: Combiner + std::fmt::Debug + std::cmp::Ord + Default + Copy + Sync + Send + 'static,
-    KDF: Kdf + std::fmt::Debug + Default + Sync + Send + Clone + 'static,
-    KEM: Capsulator,
-    KEM::Encapsulator: KeySizeUser + KeyExport + KeyInit + std::cmp::Eq + Clone + std::fmt::Debug + GetRecipientPublicKeyBytes + kem::Encapsulate,
-    KEM::Decapsulator: GetRecipientPublicKeyBytes,
-    
+where KEM: Kem,
+    N: ArraySize + Ord + Sync + Send,
+    COM: Combiner + Debug + Ord + Default + Copy + Sync + Send + 'static,
+    KDF: Kdf<N> + Default + Sync + Send + Clone + 'static,
 {
     type Kem = KemWithKdf<KEM,COM,KDF,N>;
 
-    fn encapsulate_with_rng<R>(&self, _rng: &mut R) -> (kem::Ciphertext<Self::Kem>, kem::SharedKey<Self::Kem>)
+    fn encapsulate_with_rng<R>(&self, _rng: &mut R) -> (Ciphertext<Self::Kem>, SharedKey<Self::Kem>)
     where
         R: rand::CryptoRng + ?Sized {
-        let (ciphertext, raw_shared_secret) = kem::Encapsulate::encapsulate_with_rng(&self.encapsulator, _rng);
+        let (ciphertext, raw_shared_secret) = Encapsulate::encapsulate_with_rng(&self.encapsulator, _rng);
         let shared_secret = COM::combine(raw_shared_secret, &ciphertext, &self.encapsulator, &self.kdf).unwrap();
         (ciphertext, shared_secret)
-    }
-}
-impl<KEM,COM,KDF,N> EncapsulateDeterministic2<GenericArray::<u8, KEM::CiphertextSize>, Array::<u8, N>> for KemWithKdfEncapsulator<KEM,COM,KDF,N>
-where KEM: Capsulator,
-    KDF: Kdf,
-    N: ArraySize,
-    COM: Combiner,
-    KEM::Encapsulator: GetRecipientPublicKeyBytes + EncapsulateDeterministic2<GenericArray::<u8, KEM::CiphertextSize>, Array::<u8, KEM::SharedKeySize>>,
-    <KEM::Encapsulator as EncapsulateDeterministic2<GenericArray<u8, <KEM as Capsulator>::CiphertextSize>, Array<u8, KEM::SharedKeySize>>>::Error: std::fmt::Debug,
-{
-    type Error = ();
-    type SeedSize = <<KEM as Capsulator>::Encapsulator as EncapsulateDeterministic2<GenericArray::<u8, KEM::CiphertextSize>, Array::<u8, KEM::SharedKeySize>>>::SeedSize;
-    
-    fn encapsulate_deterministic(&self, seed: &[u8]) -> Result<(GenericArray::<u8, KEM::CiphertextSize>, Array::<u8, N>), Self::Error> {
-        let Ok((ciphertext, raw_shared_secret)) = self.encapsulator.encapsulate_deterministic(seed) else { return Err(())};
-        let shared_secret = COM::combine(raw_shared_secret, &ciphertext, &self.encapsulator, &self.kdf)?;
-        Ok((ciphertext, shared_secret))
     }
 }
 
 
 impl<KEM,COM,KDF,N> FromKey for KemWithKdfEncapsulator<KEM,COM,KDF,N> 
-where KEM: Capsulator,
-    KEM::Encapsulator: FromKey,
+where KEM: Kem,
     KDF: Default,
+    KEM::EncapsulationKey: FromKey,
 {
-    type Key = <KEM::Encapsulator as FromKey>::Key;
+    type Key = <KEM::EncapsulationKey as FromKey>::Key;
 
     fn from_key(key: Self::Key) -> Self {
-        Self{encapsulator: KEM::Encapsulator::from_key(key), kdf: KDF::default(), phantom: PhantomData, phantom2: PhantomData}
+        Self{encapsulator: KEM::EncapsulationKey::from_key(key), kdf: KDF::default(), phantom: PhantomData, phantom2: PhantomData}
     }
 }
 
 
 impl<KEM,COM,KDF,N> SetKdf for KemWithKdfEncapsulator<KEM,COM,KDF,N> 
-where KEM: Capsulator,
+where KEM: Kem,
 {
     type Kdf = KDF;
 
@@ -384,41 +309,39 @@ where KEM: Capsulator,
 }
 
 impl<KEM,COM,KDF,N> FromKeys for KemWithKdfEncapsulator<KEM,COM,KDF,N> 
-where KEM: Capsulator,
-    KEM::Encapsulator: FromKeys,
+where KEM: Kem,
     KDF: Default,
+    KEM::EncapsulationKey: FromKeys,
 {
-    type PrivateKey = <KEM::Encapsulator as FromKeys>::PrivateKey;
-    type PublicKey = <KEM::Encapsulator as FromKeys>::PublicKey;
+    type PrivateKey = <KEM::EncapsulationKey as FromKeys>::PrivateKey;
+    type PublicKey = <KEM::EncapsulationKey as FromKeys>::PublicKey;
     
     fn from_keys ( pub_key: Self::PublicKey, priv_key: Self::PrivateKey ) -> Self {
-        Self{encapsulator: KEM::Encapsulator::from_keys(pub_key, priv_key), kdf: KDF::default(), phantom: PhantomData, phantom2: PhantomData}
+        Self{encapsulator: KEM::EncapsulationKey::from_keys(pub_key, priv_key), kdf: KDF::default(), phantom: PhantomData, phantom2: PhantomData}
     }
 }
 
 impl<KEM,COM,KDF,N> KemWithKdfEncapsulator<KEM,COM,KDF,N>
-where KEM: Capsulator,
+where KEM: Kem,
     KDF: Default
 {
-    pub fn from_encapsulator(encapsulator: KEM::Encapsulator) -> Self {
+    pub fn from_encapsulator(encapsulator: KEM::EncapsulationKey) -> Self {
         Self{encapsulator, kdf: KDF::default(), phantom: PhantomData, phantom2: PhantomData}
     }
-    pub fn from_encapsulator_and_kdf(encapsulator: KEM::Encapsulator, kdf: KDF) -> Self {
+    pub fn from_encapsulator_and_kdf(encapsulator: KEM::EncapsulationKey, kdf: KDF) -> Self {
         Self{encapsulator, kdf, phantom: PhantomData, phantom2: PhantomData}
     }
 }
 
 impl<KEM,COM,KDF,N> KeySizeUser for KemWithKdfEncapsulator<KEM,COM,KDF,N> 
-where KEM: Capsulator,
-    KEM::Encapsulator: KeySizeUser,
+where KEM: Kem,
     KDF: Default,
 {
-    type KeySize = <KEM::Encapsulator as KeySizeUser>::KeySize;
+    type KeySize = <KEM::EncapsulationKey as KeySizeUser>::KeySize;
 }
 
 impl<KEM,COM,KDF,N> KeyExport for KemWithKdfEncapsulator<KEM,COM,KDF,N> 
-where KEM: Capsulator,
-    KEM::Encapsulator: KeySizeUser + KeyExport,
+where KEM: Kem,
     KDF: Default,
 {
     fn to_bytes(&self) -> cipher::Key<Self> {
@@ -426,187 +349,170 @@ where KEM: Capsulator,
     }
 }
 impl<KEM,COM,KDF,N> KeyInit for KemWithKdfEncapsulator<KEM,COM,KDF,N> 
-where KEM: Capsulator,
-    KEM::Encapsulator: KeySizeUser + KeyInit,
+where KEM: Kem,
     KDF: Default,
+    KEM::EncapsulationKey: KeyInit,
 {
     fn new(key: &cipher::Key<Self>) -> Self {
-        Self{encapsulator: KEM::Encapsulator::new(key), kdf: KDF::default(), phantom: PhantomData, phantom2: PhantomData}
+        let encapsulator = <KEM::EncapsulationKey as KeyInit>::new(key);
+        Self{encapsulator, kdf: KDF::default(), phantom: PhantomData, phantom2: PhantomData}
     }
 }
 
-impl<KEM,COM,KDF,N> kem::TryKeyInit for KemWithKdfEncapsulator<KEM,COM,KDF,N> 
-where KEM: Capsulator,
-    KEM::Encapsulator: KeySizeUser + KeyInit,
+impl<KEM,COM,KDF,N> TryKeyInit for KemWithKdfEncapsulator<KEM,COM,KDF,N> 
+where KEM: Kem,
+    KEM::EncapsulationKey: TryKeyInit,
     KDF: Default,
 {
-    fn new(_key: &cipher::Key<Self>) -> Result<Self, kem::InvalidKey> {
-        todo!()
-    }
-}
-
-impl<KEM,COM,KDF,N> TryFrom<&[u8]> for KemWithKdfEncapsulator<KEM,COM,KDF,N> 
-where KEM: Capsulator,
-    KEM::Encapsulator: for<'a> TryFrom<&'a [u8]>,
-    KDF: Default,
-{
-    type Error = TryFromSliceError;
-    fn try_from(value: &[u8]) -> Result<Self, Self::Error> {
-        let Ok(encapsulator) = KEM::Encapsulator::try_from(value) else { panic!("Unhandled")};
+    fn new(key: &cipher::Key<Self>) -> Result<Self, kem::InvalidKey> {
+        let encapsulator = <KEM::EncapsulationKey as TryKeyInit>::new(key)?;
         Ok(Self{encapsulator, kdf: KDF::default(), phantom: PhantomData, phantom2: PhantomData})
     }
 }
 
-// impl<KEM,COM,KDF,N> EncodedSizeUser2 for KemWithKdfEncapsulator<KEM,COM,KDF,N> 
-// where KEM: Capsulator,
-//     KEM::Encapsulator: EncodedSizeUser2,
-//     KDF: Default,
-// {
-//     type EncodedSize = <KEM::Encapsulator as EncodedSizeUser2>::EncodedSize;
-
-//     fn from_bytes(enc: &crate::Encoded<Self>) -> Self {
-//         Self{encapsulator: KEM::Encapsulator::from_bytes(enc), kdf: KDF::default(), phantom: PhantomData, phantom2: PhantomData}
-//     }
-
-//     fn as_bytes(&self) -> crate::Encoded<Self> {
-//         self.encapsulator.as_bytes()
-//     }
-// }
-
-
-
-
-
-impl<KEM,COM,KDF,N> GetRecipientPublicKeyBytes for KemWithKdfEncapsulator<KEM,COM,KDF,N> 
-where KEM: Capsulator,
-    <KEM as Capsulator>::Encapsulator: GetRecipientPublicKeyBytes,
-    //KEM::Encapsulator: EncodedSizeUser2,
-    KEM::Encapsulator: KeySizeUser,
-    KDF: Default,
+impl<KEM, COM, KDF, N> Ord for KemWithKdfEncapsulator<KEM,COM,KDF,N>
+where KEM: Kem
 {
-    type EncodedLen = <KEM::Encapsulator as GetRecipientPublicKeyBytes>::EncodedLen;
-
-    fn get_recipient_public_key_bytes<'a>(&'a self) -> Cow<'a, [u8]> {
-        self.encapsulator.get_recipient_public_key_bytes()
+    fn cmp(&self, _other: &Self) -> std::cmp::Ordering {
+        todo!()
     }
 }
+impl<KEM, COM, KDF, N> Eq for KemWithKdfEncapsulator<KEM,COM,KDF,N>
+where KEM: Kem
+{
+    
+}
+impl<KEM, COM, KDF, N> PartialOrd for KemWithKdfEncapsulator<KEM,COM,KDF,N>
+where KEM: Kem
+{
+    fn partial_cmp(&self, _other: &Self) -> Option<std::cmp::Ordering> {
+        todo!()
+    }
+}
+impl<KEM, COM, KDF, N> PartialEq for KemWithKdfEncapsulator<KEM,COM,KDF,N>
+where KEM: Kem
+{
+    fn eq(&self, _other: &Self) -> bool {
+        todo!()
+    }
+}
+impl<KEM, COM, KDF, N> std::fmt::Debug for KemWithKdfEncapsulator<KEM,COM,KDF,N>
+where KEM: Kem
+{
+    fn fmt(&self, _f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        todo!()
+    }
+}
+impl<KEM, COM, KDF, N> Clone for KemWithKdfEncapsulator<KEM,COM,KDF,N>
+where KEM: Kem,
+    KDF: Default,
+{
+    fn clone(&self) -> Self {
+        KemWithKdfEncapsulator{kdf: KDF::default(), encapsulator: self.encapsulator.clone(), phantom: PhantomData, phantom2: PhantomData}
+    }
+}
+
+impl<KEM, COM, KDF, N> EncapsulateDeterministic for KemWithKdfEncapsulator<KEM,COM,KDF,N>
+where KEM: Kem, 
+    KEM::EncapsulationKey: EncapsulateDeterministic<Kem=KEM>,
+    COM: Combiner + Debug + Ord + Default + Copy + Sync + Send + 'static,
+    KDF: Default + Kdf<N> + Default + Sync + Clone + Send + 'static,
+    N: ArraySize + Ord + Sync + Send,
+{
+    type Kem = KemWithKdf<KEM,COM,KDF,N>;
+    type SeedSize = <KEM::EncapsulationKey as EncapsulateDeterministic>::SeedSize;
+
+    fn encapsulate_deterministic(&self, seed: &[u8]) -> (Ciphertext<Self::Kem>, SharedKey<Self::Kem>) {
+        let (ciphertext, raw_shared_secret) = self.encapsulator.encapsulate_deterministic(seed);
+        
+        let shared_secret = COM::combine(raw_shared_secret, &ciphertext, &self.encapsulator, &self.kdf).unwrap();
+        (ciphertext, shared_secret)
+    }
+}
+
+
+
+
 
 
 
 pub struct KemWithKdfDecapsulator<KEM,COM,KDF,L>
-where KEM: Capsulator
+where KEM: Kem
 {
-    pub decapsulator: KEM::Decapsulator,
+    pub decapsulator: KEM::DecapsulationKey,
+    encapsulation_key: KemWithKdfEncapsulator<KEM,COM,KDF,L>,
     kdf: KDF,
-    phantom: PhantomData<L>,
-    phantom2: PhantomData<COM>,
 }
 
-impl<KEM,COM,KDF,N> Decapsulate<GenericArray::<u8, KEM::CiphertextSize>, Array::<u8, N>> for KemWithKdfDecapsulator<KEM,COM,KDF,N>
-where KEM: Capsulator,
-    KDF: Kdf,
-    N: ArraySize,  
-    COM: Combiner,
-    <KEM as Capsulator>::Decapsulator: GetRecipientPublicKeyBytes,
-{
-    type Error = ();
-    fn decapsulate(&self, encapsulated_key: &GenericArray::<u8, KEM::CiphertextSize>) -> Result<Array::<u8, N>, Self::Error> {
-        let raw_shared_secret = self.decapsulator.decapsulate(encapsulated_key).unwrap();
-        println!("raw_shared_secret={:02X?}", raw_shared_secret);
-        COM::combine(raw_shared_secret, encapsulated_key, &self.decapsulator, &self.kdf)
-    }
-}
 
-impl<KEM,COM,KDF,N> kem::Generate for KemWithKdfDecapsulator<KEM,COM,KDF,N>
-where KEM: Capsulator
+impl<KEM,COM,KDF,N> Generate for KemWithKdfDecapsulator<KEM,COM,KDF,N>
+where KEM: Kem,
+    KDF: Default
 {
     fn try_generate_from_rng<R: rand::TryCryptoRng + ?Sized>(_rng: &mut R) -> Result<Self, R::Error> {
-        todo!()
+        let (decapsulator,_) = KEM::generate_keypair();
+        let encapsulation_key = KemWithKdfEncapsulator { encapsulator: decapsulator.encapsulation_key().clone(), kdf: KDF::default(), phantom: PhantomData, phantom2: PhantomData};
+
+        Ok(Self{ decapsulator, encapsulation_key, kdf: KDF::default() })
     }
 }
 
-impl<KEM,COM,KDF,N> kem::Decapsulator for KemWithKdfDecapsulator<KEM,COM,KDF,N>
-where KEM: Capsulator + kem::Kem,
-    COM: Combiner + Sync + Send + Default + std::fmt::Debug + std::cmp::Ord + Copy + 'static,
-    KDF: Kdf + std::fmt::Debug + Default + Sync + Send + Clone + 'static,
-    N: std::cmp::Ord + Sync + Send + ArraySize,
-    <KEM as Capsulator>::Encapsulator: KeyExport + KeyInit + Clone + std::cmp::Eq + std::fmt::Debug + kem::Encapsulate + GetRecipientPublicKeyBytes,
-    KEM: Capsulator + kem::Kem<CiphertextSize = <<<KEM as Capsulator>::Encapsulator as kem::Encapsulate>::Kem as kem::Kem>::CiphertextSize>,
-    KEM::Decapsulator: GetRecipientPublicKeyBytes,
+impl<KEM,COM,KDF,N> Decapsulator for KemWithKdfDecapsulator<KEM,COM,KDF,N>
+where KEM: kem::Kem,
+    COM: Combiner + Sync + Send + Default + Debug + Ord + Copy + 'static,
+    KDF: Kdf<N> + Default + Sync + Send + Clone + 'static,
+    N: Ord + Sync + Send + ArraySize,
+    KEM::EncapsulationKey: KeyExport + TryKeyInit + Clone + Eq + Debug + Encapsulate,
 {
     type Kem = KemWithKdf<KEM,COM,KDF,N>;
 
     fn encapsulation_key(&self) -> &kem::EncapsulationKey<Self::Kem> {
-        todo!()
+        &self.encapsulation_key
     }
 }
 
-impl<KEM,COM,KDF,N> kem::TryDecapsulate for KemWithKdfDecapsulator<KEM,COM,KDF,N>
-where KEM: Capsulator, // + ml_kem::Kem,
-    // COM: Combiner + Sync + Send + Default + std::fmt::Debug + std::cmp::Ord + Copy + 'static,
-    // KDF: Kdf + std::fmt::Debug + Default + Sync + Send + Clone + 'static,
-    // N: std::cmp::Ord + Sync + Send + ArraySize,
-    <KEM as Capsulator>::Encapsulator: KeyInit + std::cmp::Eq + Clone + std::fmt::Debug,
-    <KEM as Capsulator>::Encapsulator: kem::Encapsulate + GetRecipientPublicKeyBytes,
-    KEM: Capsulator + kem::Kem<CiphertextSize = <<<KEM as Capsulator>::Encapsulator as kem::Encapsulate>::Kem as kem::Kem>::CiphertextSize>,
-    KEM::Decapsulator: GetRecipientPublicKeyBytes,
-
-    N: ArraySize + std::cmp::Ord + Sync + Send,
-    COM: Combiner + std::fmt::Debug + std::cmp::Ord + Default + Copy + Sync + Send + 'static,
-    KDF: Kdf + std::fmt::Debug + Default + Sync + Send + Clone + 'static,
-    KEM: Capsulator,
-    KEM::Encapsulator: KeySizeUser + KeyExport + KeyInit + std::cmp::Eq + Clone + std::fmt::Debug + GetRecipientPublicKeyBytes + kem::Encapsulate,
+impl<KEM,COM,KDF,N> Decapsulate for KemWithKdfDecapsulator<KEM,COM,KDF,N>
+where KEM: Kem, 
+    KEM::EncapsulationKey: TryKeyInit + Eq + Clone + Debug + Encapsulate,
+    COM: Combiner + Debug + Ord + Default + Copy + Sync + Send + 'static,
+    KDF: Kdf<N> + Default + Sync + Send + Clone + 'static,
+    N: ArraySize + Ord + Sync + Send,
 {
-    type Error = Infallible;
-
-    fn try_decapsulate(
-        &self,
-        ct: &kem::Ciphertext<Self::Kem>,
-    ) -> Result<kem::SharedKey<Self::Kem>, Self::Error> {
-        //todo!()
-        //let raw_shared_secret = ml_kem::Decapsulate::decapsulate(&self.decapsulator, .decapsulate(ct).unwrap();
-        let raw_shared_secret = self.decapsulator.decapsulate(&GenericArray::from_slice(ct)).unwrap();
-        Ok(COM::combine(raw_shared_secret, ct, &self.decapsulator, &self.kdf).unwrap())
+    fn decapsulate(&self, ct: &kem::Ciphertext<Self::Kem>) -> kem::SharedKey<Self::Kem> {
+        let raw_shared_secret = self.decapsulator.try_decapsulate(ct).unwrap();
+        COM::combine(raw_shared_secret, ct, self.decapsulator.encapsulation_key(), &self.kdf).unwrap()
     }
 }
+
 
 impl<KEM,COM,KDF,N> FromKey for KemWithKdfDecapsulator<KEM,COM,KDF,N> 
-where KEM: Capsulator,
-    KEM::Decapsulator: FromKey,
+where KEM: Kem,
     KDF: Default,
+    KEM::DecapsulationKey: FromKey,
 {
-    type Key = <KEM::Decapsulator as FromKey>::Key;
+    type Key = <KEM::DecapsulationKey as FromKey>::Key;
 
     fn from_key(key: Self::Key) -> Self {
-        Self{decapsulator: KEM::Decapsulator::from_key(key), kdf: KDF::default(), phantom: PhantomData, phantom2: PhantomData}
+        let decapsulator = KEM::DecapsulationKey::from_key(key);
+        let encapsulation_key = KemWithKdfEncapsulator::<KEM,COM,KDF,N>{encapsulator: decapsulator.encapsulation_key().clone(), kdf: KDF::default(), phantom: PhantomData, phantom2: PhantomData };
+        Self{decapsulator, encapsulation_key, kdf: KDF::default()}
     }
 }
 
-impl<KEM,COM,KDF,N> TryFrom<&[u8]> for KemWithKdfDecapsulator<KEM,COM,KDF,N> 
-where KEM: Capsulator,
-    KEM::Decapsulator: for<'a> TryFrom<&'a [u8]>,
-    KDF: Default,
-{
-    type Error = TryFromSliceError;
-
-    fn try_from(value: &[u8]) -> Result<Self, Self::Error> {
-        let Ok(decapsulator) = KEM::Decapsulator::try_from(value) else { panic!("Unhandled")};
-        Ok(Self{decapsulator, kdf: KDF::default(), phantom: PhantomData, phantom2: PhantomData})
-    }
-}
 
 
 impl<KEM,COM,KDF,N> KemWithKdfDecapsulator<KEM,COM,KDF,N>
-where KEM: Capsulator,
+where KEM: Kem,
     KDF: Default
 {
-    pub fn from_decapsulator_and_kdf(decapsulator: KEM::Decapsulator, kdf: KDF) -> Self {
-        Self{decapsulator, kdf, phantom: PhantomData, phantom2: PhantomData}
+    pub fn from_decapsulator_and_kdf(decapsulator: KEM::DecapsulationKey, kdf: KDF) -> Self {
+        let encapsulation_key = KemWithKdfEncapsulator::<KEM,COM,KDF,N>{encapsulator: decapsulator.encapsulation_key().clone(), kdf: KDF::default(), phantom: PhantomData, phantom2: PhantomData };
+        Self{decapsulator, encapsulation_key, kdf}
     }
 }
 
 impl<KEM,COM,KDF,N> SetKdf for KemWithKdfDecapsulator<KEM,COM,KDF,N> 
-where KEM: Capsulator,
+where KEM: Kem,
     KDF: Default,
 {
     type Kdf = KDF;
@@ -615,37 +521,46 @@ where KEM: Capsulator,
         self.kdf = kdf
     }
 }
-impl<KEM,COM,KDF,N> GetEncapsulator for KemWithKdfDecapsulator<KEM,COM,KDF,N> 
-where KEM: Capsulator,
-    KEM::Decapsulator: GetEncapsulator<Encapsulator=KEM::Encapsulator>,
-    KDF: Default,
-{
-    type Encapsulator = KemWithKdfEncapsulator<KEM,COM,KDF,N>;
 
-    fn encapsulation_key(&self) -> Self::Encapsulator {
-        Self::Encapsulator{encapsulator: self.decapsulator.encapsulation_key(), kdf: KDF::default(), phantom: PhantomData, phantom2: PhantomData}
-    }
-}
 
 impl<KEM,COM,KDF,N> KeySizeUser for KemWithKdfDecapsulator<KEM,COM,KDF,N> 
-where KEM: Capsulator,
-    KEM::Decapsulator: KeySizeUser,
+where KEM: Kem,
+    KEM::DecapsulationKey: KeySizeUser,
     KDF: Default,
 {
-    type KeySize = <KEM::Decapsulator as KeySizeUser>::KeySize;
+    type KeySize = <KEM::DecapsulationKey as KeySizeUser>::KeySize;
 }
-impl<KEM,COM,KDF,N> KeyInit for KemWithKdfDecapsulator<KEM,COM,KDF,N> 
-where KEM: Capsulator,
-    KEM::Decapsulator: KeySizeUser + KeyInit,
+
+impl<KEM,COM,KDF,N> TryKeyInit for KemWithKdfDecapsulator<KEM,COM,KDF,N> 
+where KEM: Kem,
+    KEM::DecapsulationKey: KeySizeUser + TryKeyInit,
     KDF: Default,
 {
-    fn new(key: &cipher::Key<Self>) -> Self {
-        Self{decapsulator: KEM::Decapsulator::new(key), kdf: KDF::default(), phantom: PhantomData, phantom2: PhantomData}
+    fn new(key: &cipher::Key<Self>) -> Result<KemWithKdfDecapsulator<KEM, COM, KDF, N>, InvalidKey> {
+        let decapsulator = KEM::DecapsulationKey::new(key)?;
+        let encapsulation_key = KemWithKdfEncapsulator { encapsulator: decapsulator.encapsulation_key().clone(), kdf: KDF::default(), phantom:PhantomData, phantom2: PhantomData};
+        Ok(Self{decapsulator, encapsulation_key, kdf: KDF::default()})
     }
 }
+impl<KEM,COM,KDF,N> FromSeed for KemWithKdf<KEM,COM,KDF,N>
+where KEM: FromSeed,
+    KEM::EncapsulationKey: TryKeyInit,
+    COM: Combiner + Debug + Ord + Default + Copy + Send + Sync + 'static,
+    KDF: Kdf<N> + Default + Clone + Sync + Send + 'static, 
+    N: ArraySize + Ord + Sync + Send,
+{
+    type SeedSize = KEM::SeedSize;
+
+    fn from_seed(seed: &kem::Seed<Self>) -> (kem::DecapsulationKey<Self>, kem::EncapsulationKey<Self>) {
+        let (decapsulator, encapsulator) = KEM::from_seed(seed);
+        (KemWithKdfDecapsulator::from_decapsulator_and_kdf(decapsulator, KDF::default()), KemWithKdfEncapsulator::from_encapsulator(encapsulator))
+    }
+}
+
+
 impl<KEM,COM,KDF,N> KeyExport for KemWithKdfDecapsulator<KEM,COM,KDF,N> 
-where KEM: Capsulator,
-    KEM::Decapsulator: KeySizeUser + KeyExport,
+where KEM: Kem,
+    KEM::DecapsulationKey: KeySizeUser + KeyExport,
     KDF: Default,
 {
     fn to_bytes(&self) -> cipher::Key<Self> {
@@ -653,60 +568,6 @@ where KEM: Capsulator,
     }
 }
 
-impl<KEM,COM,KDF,N> GenerateDeterministic4 for KemWithKdfDecapsulator<KEM,COM,KDF,N> 
-where KEM: Capsulator,
-    KEM::Decapsulator: GenerateDeterministic4,
-    KDF: Default,
-{
-    type SeedSize = <KEM::Decapsulator as GenerateDeterministic4>::SeedSize;
-    type Error = <KEM::Decapsulator as GenerateDeterministic4>::Error;
-
-    fn generate_deterministic(seed: &Array::<u8, Self::SeedSize>) -> Result<Self, Self::Error> where Self: Sized {
-        let Ok(decapsulator) = <KEM::Decapsulator as GenerateDeterministic4>::generate_deterministic(seed) else { panic! ( "unhandled")};
-        Ok(Self{decapsulator, kdf: KDF::default(), phantom: PhantomData, phantom2: PhantomData})
-    }
-}
-
-
-
-//     fn from_bytes(enc: &crate::Encoded<Self>) -> Self {
-//         Self{decapsulator: KEM::Decapsulator::from_bytes(enc), kdf: KDF::default(), phantom: PhantomData, phantom2: PhantomData}
-//     }
-
-//     fn as_bytes(&self) -> crate::Encoded<Self> {
-//         self.decapsulator.as_bytes()
-//     }
-// }
-
-
-impl<KEM,COM,KDF,N> DecodeGenericArray<Self> for KemWithKdfDecapsulator<KEM,COM,KDF,N> 
-where KEM: Capsulator,
-    //KEM::Decapsulator: EncodedSizeUser2,
-    KEM::Decapsulator: DecodeGenericArray<KEM::Decapsulator>,
-    KDF: Default,
-{
-    type EncodedLen = <KEM::Decapsulator as DecodeGenericArray<KEM::Decapsulator>>::EncodedLen;
-    
-    type Error = ();
-    
-    fn decode(encoded_bytes: &GenericArray<u8, Self::EncodedLen>) -> Result<Self, Self::Error> {
-        let Ok(decapsulator) = KEM::Decapsulator::decode(encoded_bytes) else { return Err(())};
-        Ok(Self{decapsulator, kdf: KDF::default(), phantom: PhantomData, phantom2: PhantomData})
-    }
-}
-impl<KEM,COM,KDF,N> GetRecipientPublicKeyBytes for KemWithKdfDecapsulator<KEM,COM,KDF,N> 
-where KEM: Capsulator,
-    <KEM as Capsulator>::Decapsulator: GetRecipientPublicKeyBytes,
-    //KEM::Encapsulator: EncodedSizeUser2,
-    KDF: Default,
-{
-    type EncodedLen = <KEM::Decapsulator as GetRecipientPublicKeyBytes>::EncodedLen;
-
-    //fn get_recipient_public_key_bytes(&self) -> GenericArray<u8, Self::EncodedLen> {
-    fn get_recipient_public_key_bytes<'a>(&'a self) -> Cow<'a, [u8]> {
-        self.decapsulator.get_recipient_public_key_bytes()
-    }
-}
 
 
 
@@ -729,63 +590,18 @@ pub struct KemAuthWithKdf<KEM,COM,KDF,L>
 
 
 
-impl<KEM, COM, KDF,L> Capsulator for KemAuthWithKdf<KEM,COM,KDF,L>
-where KEM: Capsulator,
-    KDF: Kdf + Default,
-    L: ArraySize,
-    COM: AuthCombiner,
-    <KEM as Capsulator>::Encapsulator: GetSenderPublicKeyBytes + GetRecipientPublicKeyBytes,
-    <KEM as Capsulator>::Decapsulator: GetSenderPublicKeyBytes + GetRecipientPublicKeyBytes,
-{
-    type Encapsulator = KemAuthWithKdfEncapsulator<KEM, COM, KDF, L>;
-    type Decapsulator = KemAuthWithKdfDecapsulator<KEM, COM, KDF, L>;
-    type SharedKeySize = L;
-    type CiphertextSize = KEM::CiphertextSize;
-
-    fn generate_from_rng ( rng: &mut impl rand_core::CryptoRngCore ) -> (Self::Encapsulator, Self::Decapsulator) {
-        let (encapsulator, decapsulator) = KEM::generate_from_rng(rng);
-        (Self::Encapsulator::from_encapsulator(encapsulator), Self::Decapsulator::from_decapsulator(decapsulator))
-    }
-}
-
-
-impl<KEM, COM, KDF,L> GenerateDeterministic3 for KemAuthWithKdf<KEM,COM,KDF,L>
-where
-    KEM: Capsulator<Encapsulator=<KEM as GenerateDeterministic3>::Public, Decapsulator=<KEM as GenerateDeterministic3>::Private>,
-    KEM: GenerateDeterministic3,
-    KDF: Kdf + Default,
-    L: ArraySize,
-    COM: AuthCombiner,
-    <KEM as Capsulator>::Encapsulator: GetSenderPublicKeyBytes + GetRecipientPublicKeyBytes,
-    <KEM as Capsulator>::Decapsulator: GetSenderPublicKeyBytes + GetRecipientPublicKeyBytes,
-
-{
-    type SeedSize = KEM::SeedSize;
-    type Private = <Self as Capsulator>::Decapsulator;
-    type Public = <Self as Capsulator>::Encapsulator;
-    type Error = ();
-
-    fn generate_deterministic(seed: &Array::<u8, Self::SeedSize>) -> Result<(Self::Public, Self::Private), Self::Error> {
-        let (encapsulator, decapsulator) = KEM::generate_deterministic(seed).map_err(|_|())?;
-        //let decapsulator = KemAuthWithKdfDecapsulator::<KEM, COM, KDF, L>::generate_deterministic(seed);
-        Ok((Self::Public::from_encapsulator(encapsulator), 
-            Self::Private::from_decapsulator(decapsulator)))
-    }
-}
-
-
 impl<KEM, COM, KDF,L> KemAuthWithKdf<KEM,COM,KDF,L>
-where KEM: Capsulator,
-    KDF: Kdf + Default,
-    L: ArraySize,
-    COM: AuthCombiner,
-    <KEM as Capsulator>::Encapsulator: FromKeys + GetRecipientPublicKeyBytes + GetSenderPublicKeyBytes,
-    <KEM as Capsulator>::Decapsulator: FromKeys + GetRecipientPublicKeyBytes + GetSenderPublicKeyBytes,
+where KEM: Kem,
+    KDF: Kdf<L>+ Default + Send + Sync + 'static,
+    L: ArraySize + Send + Sync + 'static,
+    COM: Combiner+ Send + Sync + 'static,
+    KEM::EncapsulationKey: FromKeys,
+    KEM::DecapsulationKey: FromKeys + Decapsulate,
 {
-    pub fn encap_from_keys ( pub_key: <KEM::Encapsulator as FromKeys>::PublicKey, priv_key: <KEM::Encapsulator as FromKeys>::PrivateKey ) -> <Self as Capsulator>::Encapsulator {
+    pub fn encap_from_keys ( pub_key: <KEM::EncapsulationKey as FromKeys>::PublicKey, priv_key: <KEM::EncapsulationKey as FromKeys>::PrivateKey ) -> <Self as Kem>::EncapsulationKey {
         KemAuthWithKdfEncapsulator::from_keys(pub_key, priv_key)
     }
-    pub fn decap_from_keys ( pub_key: <KEM::Decapsulator as FromKeys>::PublicKey, priv_key: <KEM::Decapsulator as FromKeys>::PrivateKey ) -> <Self as Capsulator>::Decapsulator {
+    pub fn decap_from_keys ( pub_key: <KEM::DecapsulationKey as FromKeys>::PublicKey, priv_key: <KEM::DecapsulationKey as FromKeys>::PrivateKey ) -> <Self as Kem>::DecapsulationKey {
         KemAuthWithKdfDecapsulator::from_keys(pub_key, priv_key)
     }
 }
@@ -794,61 +610,28 @@ where KEM: Capsulator,
 
 
 pub struct KemAuthWithKdfEncapsulator<KEM,COM,KDF,N>
-where KEM: Capsulator
+where KEM: Kem
 {
-    pub encapsulator: KEM::Encapsulator,
+    pub encapsulator: KEM::EncapsulationKey,
     kdf: KDF,
     phantom: PhantomData<N>,
     phantom2: PhantomData<COM>
 }
-impl<KEM,COM,KDF,N> Encapsulate<GenericArray::<u8, KEM::CiphertextSize>, Array::<u8, N>> for KemAuthWithKdfEncapsulator<KEM,COM,KDF,N>
-where KEM: Capsulator,
-    KDF: Kdf,
-    N: ArraySize,
-    COM: AuthCombiner,
-    //<KEM as Capsulator>::Encapsulator: EncodedSizeUser2,
-    <KEM as Capsulator>::Encapsulator: GetSenderPublicKeyBytes + GetRecipientPublicKeyBytes,
-{
-    type Error = ();
-    
-    fn encapsulate(&self, rng: &mut impl rand_core::CryptoRngCore) -> Result<(GenericArray::<u8, KEM::CiphertextSize>, Array::<u8, N>), Self::Error> {
-        let (ciphertext, raw_shared_secret) = self.encapsulator.encapsulate(rng).unwrap();
-        let shared_secret = COM::combine(raw_shared_secret, &ciphertext, &self.encapsulator, &self.kdf)?;
-        Ok((ciphertext, shared_secret))
-    }
-}
-impl<KEM,COM,KDF,N> EncapsulateDeterministic2<GenericArray::<u8, KEM::CiphertextSize>, Array::<u8, N>> for KemAuthWithKdfEncapsulator<KEM,COM,KDF,N>
-where KEM: Capsulator,
-    KDF: Kdf,
-    N: ArraySize,
-    COM: AuthCombiner,
-    KEM::Encapsulator: GetSenderPublicKeyBytes + GetRecipientPublicKeyBytes + EncapsulateDeterministic2<GenericArray::<u8, KEM::CiphertextSize>, Array::<u8, KEM::SharedKeySize>>,
-    <KEM::Encapsulator as EncapsulateDeterministic2<GenericArray<u8, <KEM as Capsulator>::CiphertextSize>, cipher::Array<u8, KEM::SharedKeySize>>>::Error: std::fmt::Debug,
-{
-    type Error = ();
-    type SeedSize = <<KEM as Capsulator>::Encapsulator as EncapsulateDeterministic2<GenericArray::<u8, KEM::CiphertextSize>, Array::<u8, KEM::SharedKeySize>>>::SeedSize;
-        
-    fn encapsulate_deterministic(&self, seed: &[u8]) -> Result<(GenericArray::<u8, KEM::CiphertextSize>, Array::<u8, N>), Self::Error> {
-        let Ok((ciphertext, raw_shared_secret)) = self.encapsulator.encapsulate_deterministic(seed) else { return Err(())};
-        let shared_secret = COM::combine(raw_shared_secret, &ciphertext, &self.encapsulator, &self.kdf)?;
-        Ok((ciphertext, shared_secret))
-    }
-}
 
 impl<KEM,COM,KDF,N> FromKey for KemAuthWithKdfEncapsulator<KEM,COM,KDF,N> 
-where KEM: Capsulator,
-    KEM::Encapsulator: FromKey,
+where KEM: Kem,
+    KEM::EncapsulationKey: FromKey,
     KDF: Default,
 {
-    type Key = <KEM::Encapsulator as FromKey>::Key;
+    type Key = <KEM::EncapsulationKey as FromKey>::Key;
 
     fn from_key(key: Self::Key) -> Self {
-        Self{encapsulator: KEM::Encapsulator::from_key(key), kdf: KDF::default(), phantom: PhantomData, phantom2: PhantomData}
+        Self{encapsulator: KEM::EncapsulationKey::from_key(key), kdf: KDF::default(), phantom: PhantomData, phantom2: PhantomData}
     }
 }
 
 impl<KEM,COM,KDF,N> SetKdf for KemAuthWithKdfEncapsulator<KEM,COM,KDF,N> 
-where KEM: Capsulator,
+where KEM: Kem,
 {
     type Kdf = KDF;
 
@@ -858,23 +641,23 @@ where KEM: Capsulator,
 }
 
 impl<KEM,COM,KDF,N> FromKeys for KemAuthWithKdfEncapsulator<KEM,COM,KDF,N> 
-where KEM: Capsulator,
-    KEM::Encapsulator: FromKeys,
+where KEM: Kem,
+    KEM::EncapsulationKey: FromKeys,
     KDF: Default,
 {
-    type PrivateKey = <KEM::Encapsulator as FromKeys>::PrivateKey;
-    type PublicKey = <KEM::Encapsulator as FromKeys>::PublicKey;
+    type PrivateKey = <KEM::EncapsulationKey as FromKeys>::PrivateKey;
+    type PublicKey = <KEM::EncapsulationKey as FromKeys>::PublicKey;
     
     fn from_keys ( pub_key: Self::PublicKey, priv_key: Self::PrivateKey ) -> Self {
-        Self{encapsulator: KEM::Encapsulator::from_keys(pub_key, priv_key), kdf: KDF::default(), phantom: PhantomData, phantom2: PhantomData}
+        Self{encapsulator: KEM::EncapsulationKey::from_keys(pub_key, priv_key), kdf: KDF::default(), phantom: PhantomData, phantom2: PhantomData}
     }
 }
 
 impl<KEM,COM,KDF,N> KemAuthWithKdfEncapsulator<KEM,COM,KDF,N>
-where KEM: Capsulator,
+where KEM: Kem,
     KDF: Default
 {
-    pub fn from_encapsulator(encapsulator: KEM::Encapsulator) -> Self {
+    pub fn from_encapsulator(encapsulator: KEM::EncapsulationKey) -> Self {
         Self{encapsulator, kdf: KDF::default(), phantom: PhantomData, phantom2: PhantomData}
     }
 }
@@ -889,54 +672,40 @@ where KEM: Capsulator,
 ///  KDF - Key derivation function to use for converting the combiner values into key material
 ///  L - Length of the output key material
 pub struct KemAuthWithKdfDecapsulator<KEM,COM,KDF,L>
-where KEM: Capsulator
+where KEM: Kem
 {
-    pub decapsulator: KEM::Decapsulator,
+    pub decapsulator: KEM::DecapsulationKey,
     kdf: KDF,
     phantom: PhantomData<L>,
     phantom2: PhantomData<COM>,
 }
 
-impl<KEM,COM,KDF,N> Decapsulate<GenericArray::<u8, KEM::CiphertextSize>, Array::<u8, N>> for KemAuthWithKdfDecapsulator<KEM,COM,KDF,N>
-where KEM: Capsulator,
-    KDF: Kdf,
-    N: ArraySize,  
-    COM: AuthCombiner ,
-    <KEM as Capsulator>::Decapsulator: GetRecipientPublicKeyBytes + GetSenderPublicKeyBytes
-{
-    type Error = ();
-    fn decapsulate(&self, encapsulated_key: &GenericArray::<u8, KEM::CiphertextSize>) -> Result<Array::<u8, N>, Self::Error> {
-        let Ok(raw_shared_secret) = self.decapsulator.decapsulate(encapsulated_key) else { return Err(())};
-        COM::combine(raw_shared_secret, encapsulated_key, &self.decapsulator, &self.kdf)
-    }
-}
-
 impl<KEM,COM,KDF,N> FromKey for KemAuthWithKdfDecapsulator<KEM,COM,KDF,N> 
-where KEM: Capsulator,
-    KEM::Decapsulator: FromKey,
+where KEM: Kem,
+    KEM::DecapsulationKey: FromKey,
     KDF: Default,
 {
-    type Key = <KEM::Decapsulator as FromKey>::Key;
+    type Key = <KEM::DecapsulationKey as FromKey>::Key;
 
     fn from_key(key: Self::Key) -> Self {
-        Self{decapsulator: KEM::Decapsulator::from_key(key), kdf: KDF::default(), phantom: PhantomData, phantom2: PhantomData}
+        Self{decapsulator: KEM::DecapsulationKey::from_key(key), kdf: KDF::default(), phantom: PhantomData, phantom2: PhantomData}
     }
 }
 
 impl<KEM,COM,KDF,N> KemAuthWithKdfDecapsulator<KEM,COM,KDF,N>
-where KEM: Capsulator,
+where KEM: Kem,
     KDF: Default
 {
-    pub fn from_decapsulator(decapsulator: KEM::Decapsulator) -> Self {
+    pub fn from_decapsulator(decapsulator: KEM::DecapsulationKey) -> Self {
         Self{decapsulator, kdf: KDF::default(), phantom: PhantomData, phantom2: PhantomData}
     }
-    pub fn from_decapsulator_and_kdf(decapsulator: KEM::Decapsulator, kdf: KDF) -> Self {
+    pub fn from_decapsulator_and_kdf(decapsulator: KEM::DecapsulationKey, kdf: KDF) -> Self {
         Self{decapsulator, kdf, phantom: PhantomData, phantom2: PhantomData}
     }
 }
 
 impl<KEM,COM,KDF,N> SetKdf for KemAuthWithKdfDecapsulator<KEM,COM,KDF,N> 
-where KEM: Capsulator,
+where KEM: Kem,
 {
     type Kdf = KDF;
 
@@ -946,503 +715,259 @@ where KEM: Capsulator,
 }
 
 
-
-// impl<KEM,COM,KDF,N> EncodedSizeUser2 for KemAuthWithKdfDecapsulator<KEM,COM,KDF,N> 
-// where KEM: Capsulator,
-//     KEM::Decapsulator: EncodedSizeUser2,
-//     KDF: Default,
-// {
-//     type EncodedSize = <KEM::Decapsulator as EncodedSizeUser2>::EncodedSize;
-
-//     fn from_bytes(enc: &crate::Encoded<Self>) -> Self {
-//         Self{decapsulator: KEM::Decapsulator::from_bytes(enc), kdf: KDF::default(), phantom: PhantomData, phantom2: PhantomData}
-//     }
-
-//     fn as_bytes(&self) -> crate::Encoded<Self> {
-//         self.decapsulator.as_bytes()
-//     }
-// }
-
 impl<KEM,COM,KDF,N> FromKeys for KemAuthWithKdfDecapsulator<KEM,COM,KDF,N> 
-where KEM: Capsulator,
-    KEM::Decapsulator: FromKeys,
+where KEM: Kem,
+    KEM::DecapsulationKey: FromKeys,
     KDF: Default,
 {
-    type PrivateKey = <KEM::Decapsulator as FromKeys>::PrivateKey;
-    type PublicKey = <KEM::Decapsulator as FromKeys>::PublicKey;
+    type PrivateKey = <KEM::DecapsulationKey as FromKeys>::PrivateKey;
+    type PublicKey = <KEM::DecapsulationKey as FromKeys>::PublicKey;
     
     fn from_keys ( pub_key: Self::PublicKey, priv_key: Self::PrivateKey ) -> Self {
-        Self{decapsulator: KEM::Decapsulator::from_keys(pub_key, priv_key), kdf: KDF::default(), phantom: PhantomData, phantom2: PhantomData}
+        Self{decapsulator: KEM::DecapsulationKey::from_keys(pub_key, priv_key), kdf: KDF::default(), phantom: PhantomData, phantom2: PhantomData}
     }
 }
 
 
 
-// impl<KEM,COM,KDF,N> DecodeGenericArray<Self> for KemWithKdfEncapsulator<KEM,COM,KDF,N> 
-// where KEM: Capsulator,
-//     KEM::Encapsulator: EncodedSizeUser2,
-//     KDF: Default,
-// {
-//     type EncodedLen = <KEM::Encapsulator as EncodedSizeUser2>::EncodedSize;
-//     type Error = ();
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+impl<KEM, COM, KDF,L> Kem for KemAuthWithKdf<KEM,COM,KDF,L>
+where KEM: kem::Kem + Kem,
+    KDF: Kdf<L>+ Default+ Send + Sync + 'static,
+    L: ArraySize + Send + Sync + 'static,
+    COM: Combiner + Send + Sync + 'static,
+    KEM::DecapsulationKey: Decapsulate, 
     
-//     fn decode(encoded_bytes: &GenericArray<u8, Self::EncodedLen>) -> Result<Self, Self::Error> {
-//         Ok(Self{encapsulator: KEM::Encapsulator::from_bytes(encoded_bytes), kdf: KDF::default(), phantom: PhantomData, phantom2: PhantomData})
-//     }
-// }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-//
-// 
-// 
-// 
-
-
-
-// pub struct KemWithKdfWithCiphertextAndPublicKey<KEM,KDF,L> 
-// (
-//     PhantomData<KEM>,
-//     PhantomData<KDF>,
-//     PhantomData<L>
-// );
-
-
-
-// impl<KEM, KDF,L> Capsulator for KemWithKdfWithCiphertextAndPublicKey<KEM,KDF,L>
-// where KEM: Capsulator,
-//     KDF: Kdf + Default,
-//     L: ArraySize,
-//     <KEM as Capsulator>::Encapsulator: EncodedSizeUser2,
-//     <KEM as Capsulator>::Decapsulator: GetEncapsulator,
-//     <<KEM as Capsulator>::Decapsulator as GetEncapsulator>::Encapsulator: EncodedSizeUser2,
-// {
-//     type Encapsulator = KemWithKdfWithCiphertextAndPublicKeyEncapsulator<KEM, KDF, L>;
-//     type Decapsulator = KemWithKdfWithCiphertextAndPublicKeyDecapsulator<KEM, KDF, L>;
-//     type SharedKeySize = L;
-//     type CiphertextSize = KEM::CiphertextSize;
-
-//     fn generate ( rng: &mut impl rand_core::CryptoRngCore ) -> (Self::Encapsulator, Self::Decapsulator) {
-//         let (encapsulator, decapsulator) = KEM::generate(rng);
-//         (Self::Encapsulator{encapsulator, kdf: KDF::default(), phantom:PhantomData}, Self::Decapsulator{decapsulator, kdf: KDF::default(), phantom: PhantomData})
-//     }
-// }
-
-// impl<KEM, KDF, L> GenerateCapsulatorFromSeed for KemWithKdfWithCiphertextAndPublicKey<KEM,KDF,L>
-// where KEM: GenerateCapsulatorFromSeed,
-//     KDF: Kdf + Default,
-//     L: ArraySize,
-//     <KEM as Capsulator>::Encapsulator: EncodedSizeUser2,
-//     <KEM as Capsulator>::Decapsulator: GetEncapsulator,
-//     <<KEM as Capsulator>::Decapsulator as GetEncapsulator>::Encapsulator: EncodedSizeUser2,
-// {
-//     type SeedSize = KEM::SeedSize;
-
-//     fn derive_from_seed(seed: &Array::<u8, Self::SeedSize>) -> (Self::Encapsulator, Self::Decapsulator) {
-//         let (encapsulator, decapsulator) = KEM::derive_from_seed(seed);
-//         (Self::Encapsulator{encapsulator, kdf: KDF::default(), phantom:PhantomData}, Self::Decapsulator{decapsulator, kdf: KDF::default(), phantom: PhantomData})
-//     }
-// }
-
-
-
-
-// pub struct KemWithKdfWithCiphertextAndPublicKeyEncapsulator<KEM,KDF,N>
-// where KEM: Capsulator
-// {
-//     pub encapsulator: KEM::Encapsulator,
-//     pub kdf: KDF,
-//     phantom: PhantomData<N>
-// }
-// impl<KEM,KDF,N> Encapsulate<GenericArray::<u8, KEM::CiphertextSize>, Array::<u8, N>> for KemWithKdfWithCiphertextAndPublicKeyEncapsulator<KEM,KDF,N>
-// where KEM: Capsulator,
-//     KEM::Encapsulator: EncodedSizeUser2,
-//     KDF: Kdf,
-//     N: ArraySize
-// {
-//     type Error = ();
-    
-//     fn encapsulate(&self, rng: &mut impl rand_core::CryptoRngCore) -> Result<(GenericArray::<u8, KEM::CiphertextSize>, Array::<u8, N>), Self::Error> {
-//         let (ciphertext, shared_secret) = self.encapsulator.encapsulate(rng).unwrap();
-//         let public_key = self.encapsulator.as_bytes();
-//         let derived_shared_secret = self.kdf.derive_self_secret_others(&shared_secret, [ciphertext.as_slice(), public_key.as_slice()]);
-//         Ok((ciphertext, derived_shared_secret))
-//     }
-// }
-// impl<KEM,KDF,N> FromKey for KemWithKdfWithCiphertextAndPublicKeyEncapsulator<KEM,KDF,N> 
-// where KEM: Capsulator,
-//     KEM::Encapsulator: FromKey,
-//     KDF: Default,
-// {
-//     type Key = <KEM::Encapsulator as FromKey>::Key;
-
-//     fn from_key(key: Self::Key) -> Self {
-//         Self{encapsulator: KEM::Encapsulator::from_key(key), kdf: KDF::default(), phantom: PhantomData}
-//     }
-// }
-// impl<KEM,KDF,N> KemWithKdfWithCiphertextAndPublicKeyEncapsulator<KEM,KDF,N>
-// where KEM: Capsulator,
-//     KDF: Default
-// {
-//     pub fn from_encapsulator(encapsulator: KEM::Encapsulator) -> Self {
-//         Self{encapsulator, kdf: KDF::default(), phantom: PhantomData}
-//     }
-// }
-// impl<KEM,KDF,N> EncodedSizeUser2 for KemWithKdfWithCiphertextAndPublicKeyEncapsulator<KEM,KDF,N> 
-// where KEM: Capsulator,
-//     KEM::Encapsulator: EncodedSizeUser2,
-//     KEM::Encapsulator: FromKey,
-//     KDF: Default,
-// {
-//     type EncodedSize = <KEM::Encapsulator as EncodedSizeUser2>::EncodedSize;
-
-//     fn from_bytes(enc: &crate::Encoded<Self>) -> Self {
-//         Self{encapsulator: KEM::Encapsulator::from_bytes(enc), kdf: KDF::default(), phantom: PhantomData}
-//     }
-
-//     fn as_bytes(&self) -> crate::Encoded<Self> {
-//         self.encapsulator.as_bytes()
-//     }
-// }
-
-
-// pub struct KemWithKdfWithCiphertextAndPublicKeyDecapsulator<KEM,KDF,L>
-// where KEM: Capsulator
-// {
-//     pub decapsulator: KEM::Decapsulator,
-//     pub kdf: KDF,
-//     phantom: PhantomData<L>
-// }
-
-// impl<KEM,KDF,N> FromKey for KemWithKdfWithCiphertextAndPublicKeyDecapsulator<KEM,KDF,N> 
-// where KEM: Capsulator,
-//     KEM::Decapsulator: FromKey,
-//     KDF: Default,
-// {
-//     type Key = <KEM::Decapsulator as FromKey>::Key;
-
-//     fn from_key(key: Self::Key) -> Self {
-//         Self{decapsulator: KEM::Decapsulator::from_key(key), kdf: KDF::default(), phantom: PhantomData}
-//     }
-// }
-
-// impl<KEM,KDF,N> KemWithKdfWithCiphertextAndPublicKeyDecapsulator<KEM,KDF,N>
-// where KEM: Capsulator,
-//     KDF: Default
-// {
-//     pub fn from_decapsulator_and_kdf(decapsulator: KEM::Decapsulator, kdf: KDF) -> Self {
-//         Self{decapsulator, kdf, phantom: PhantomData}
-//     }
-// }
-// impl<KEM,KDF,N> Decapsulate<GenericArray::<u8, KEM::CiphertextSize>, Array::<u8, N>> for KemWithKdfWithCiphertextAndPublicKeyDecapsulator<KEM,KDF,N>
-// where KEM: Capsulator,
-//     KEM::Decapsulator: GetEncapsulator,
-//     <KEM::Decapsulator as GetEncapsulator>::Encapsulator: EncodedSizeUser2,
-//     KDF: Kdf,
-//     N: ArraySize,    
-// {
-//     type Error = ();
-//     fn decapsulate(&self, encapsulated_key: &GenericArray::<u8, KEM::CiphertextSize>) -> Result<Array::<u8, N>, Self::Error> {
-//         let shared_secret = self.decapsulator.decapsulate(encapsulated_key).unwrap();
-//         let public_key = self.decapsulator.get_encapsulator().as_bytes();
-//         Ok(self.kdf.derive_self_secret_others(&shared_secret, [encapsulated_key.as_slice(), public_key.as_slice()]))
-//     }
-// }
-
-
-// impl<KEM,KDF,N> GetEncapsulator for KemWithKdfWithCiphertextAndPublicKeyDecapsulator<KEM,KDF,N>
-// where KEM: Capsulator,
-//     KEM::Decapsulator: GetEncapsulator<Encapsulator=KEM::Encapsulator>,
-//     KDF: Default
-// {
-//     type Encapsulator = KemWithKdfWithCiphertextAndPublicKeyEncapsulator<KEM,KDF,N>;
-
-//     fn get_encapsulator(&self) -> Self::Encapsulator {
-//         Self::Encapsulator{ encapsulator: self.decapsulator.get_encapsulator(), kdf: KDF::default(), phantom: PhantomData }
-//     }
-// }
-
-// impl<KEM,KDF,N> EncodedSizeUser2 for KemWithKdfWithCiphertextAndPublicKeyDecapsulator<KEM,KDF,N> 
-// where KEM: Capsulator,
-//     KEM::Decapsulator: EncodedSizeUser2,
-//     KEM::Decapsulator: FromKey,
-//     KDF: Default,
-// {
-//     type EncodedSize = <KEM::Decapsulator as EncodedSizeUser2>::EncodedSize;
-
-//     fn from_bytes(enc: &crate::Encoded<Self>) -> Self {
-//         Self{decapsulator: KEM::Decapsulator::from_bytes(enc), kdf: KDF::default(), phantom: PhantomData}
-//     }
-
-//     fn as_bytes(&self) -> crate::Encoded<Self> {
-//         self.decapsulator.as_bytes()
-//     }
-// }
-// impl<KEM,KDF,N> FromKeys for KemWithKdfWithCiphertextAndPublicKeyEncapsulator<KEM,KDF,N> 
-// where KEM: Capsulator,
-//     KEM::Encapsulator: FromKeys,
-//     KDF: Default,
-// {
-//     type PrivateKey = <KEM::Encapsulator as FromKeys>::PrivateKey;
-//     type PublicKey = <KEM::Encapsulator as FromKeys>::PublicKey;
-    
-//     fn from_keys ( pub_key: Self::PublicKey, priv_key: Self::PrivateKey ) -> Self {
-//         Self{encapsulator: KEM::Encapsulator::from_keys(pub_key, priv_key), kdf: KDF::default(), phantom: PhantomData}
-//     }
-// }
-
-
-//
-// 
-// 
-// 
-
-
-
-// pub struct KemWithKdfWithCiphertext<KEM,KDF,L> 
-// (
-//     PhantomData<KEM>,
-//     PhantomData<KDF>,
-//     PhantomData<L>
-// );
-
-
-
-// impl<KEM, KDF,L> Capsulator for KemWithKdfWithCiphertext<KEM,KDF,L>
-// where KEM: Capsulator,
-//     KDF: Kdf + Default,
-//     L: ArraySize
-// {
-//     type Encapsulator = KemWithKdfWithCiphertextEncapsulator<KEM, KDF, L>;
-//     type Decapsulator = KemWithKdfWithCiphertextDecapsulator<KEM, KDF, L>;
-//     type SharedKeySize = L;
-//     type CiphertextSize = KEM::CiphertextSize;
-
-//     fn generate ( rng: &mut impl rand_core::CryptoRngCore ) -> (Self::Encapsulator, Self::Decapsulator) {
-//         let (encapsulator, decapsulator) = KEM::generate(rng);
-//         (Self::Encapsulator{encapsulator, kdf: KDF::default(), phantom:PhantomData}, Self::Decapsulator{decapsulator, kdf: KDF::default(), phantom: PhantomData})
-//     }
-// }
-
-
-// pub struct KemWithKdfWithCiphertextEncapsulator<KEM,KDF,N>
-// where KEM: Capsulator
-// {
-//     encapsulator: KEM::Encapsulator,
-//     kdf: KDF,
-//     phantom: PhantomData<N>
-// }
-// impl<KEM,KDF,N> Encapsulate<GenericArray::<u8, KEM::CiphertextSize>, Array::<u8, N>> for KemWithKdfWithCiphertextEncapsulator<KEM,KDF,N>
-// where KEM: Capsulator,
-//     KDF: Kdf,
-//     N: ArraySize
-// {
-//     type Error = ();
-    
-//     fn encapsulate(&self, rng: &mut impl rand_core::CryptoRngCore) -> Result<(GenericArray::<u8, KEM::CiphertextSize>, Array::<u8, N>), Self::Error> {
-//         let (ciphertext, shared_secret) = self.encapsulator.encapsulate(rng).unwrap();
-//         let derived_shared_secret = self.kdf.derive_self_secret_other(&shared_secret, &ciphertext);
-//         Ok((ciphertext, derived_shared_secret))
-//     }
-// }
-// impl<KEM,KDF,N> FromKey for KemWithKdfWithCiphertextEncapsulator<KEM,KDF,N> 
-// where KEM: Capsulator,
-//     KEM::Encapsulator: FromKey,
-//     KDF: Default,
-// {
-//     type Key = <KEM::Encapsulator as FromKey>::Key;
-
-//     fn from_key(key: Self::Key) -> Self {
-//         Self{encapsulator: KEM::Encapsulator::from_key(key), kdf: KDF::default(), phantom: PhantomData}
-//     }
-// }
-// impl<KEM,KDF,N> KemWithKdfWithCiphertextEncapsulator<KEM,KDF,N>
-// where KEM: Capsulator,
-//     KDF: Default
-// {
-//     pub fn from_encapsulator(encapsulator: KEM::Encapsulator) -> Self {
-//         Self{encapsulator, kdf: KDF::default(), phantom: PhantomData}
-//     }
-// }
-
-
-// pub struct KemWithKdfWithCiphertextDecapsulator<KEM,KDF,L>
-// where KEM: Capsulator
-// {
-//     decapsulator: KEM::Decapsulator,
-//     kdf: KDF,
-//     phantom: PhantomData<L>
-// }
-
-// impl<KEM,KDF,N> FromKey for KemWithKdfWithCiphertextDecapsulator<KEM,KDF,N> 
-// where KEM: Capsulator,
-//     KEM::Decapsulator: FromKey,
-//     KDF: Default,
-// {
-//     type Key = <KEM::Decapsulator as FromKey>::Key;
-
-//     fn from_key(key: Self::Key) -> Self {
-//         Self{decapsulator: KEM::Decapsulator::from_key(key), kdf: KDF::default(), phantom: PhantomData}
-//     }
-// }
-
-// impl<KEM,KDF,N> KemWithKdfWithCiphertextDecapsulator<KEM,KDF,N>
-// where KEM: Capsulator,
-//     KDF: Default
-// {
-//     pub fn from_decapsulator_and_kdf(decapsulator: KEM::Decapsulator, kdf: KDF) -> Self {
-//         Self{decapsulator, kdf, phantom: PhantomData}
-//     }
-// }
-// impl<KEM,KDF,N> Decapsulate<GenericArray::<u8, KEM::CiphertextSize>, Array::<u8, N>> for KemWithKdfWithCiphertextDecapsulator<KEM,KDF,N>
-// where KEM: Capsulator,
-//     KDF: Kdf,
-//     N: ArraySize,    
-// {
-//     type Error = ();
-//     fn decapsulate(&self, encapsulated_key: &GenericArray::<u8, KEM::CiphertextSize>) -> Result<Array::<u8, N>, Self::Error> {
-//         let shared_secret = self.decapsulator.decapsulate(encapsulated_key).unwrap();
-//         Ok(self.kdf.derive_self_secret_other(&shared_secret, encapsulated_key))
-//     }
-// }
-
-
-
-
-
-
-
-
-// impl<KEM,COM,KDF,N> EncodeGenericArray<Self> for KemWithKdfDecapsulator<KEM,COM,KDF,N> 
-// where KEM: Capsulator,
-//     //KEM::Decapsulator: EncodedSizeUser2,
-//     KEM::Decapsulator: EncodeGenericArray<KEM::Decapsulator>,
-//     KDF: Default,
-// {
-//     type EncodedLen = <KEM::Decapsulator as EncodeGenericArray<KEM::Decapsulator>>::EncodedLen;
-    
-//     fn encode(source: &Self) -> GenericArray<u8, Self::EncodedLen> {
-//         <KEM as Capsulator>::Decapsulator::encode(&source.decapsulator)
-//     }
-// }
-
-/// Implementation of traits for new KEM traits
-
-impl std::fmt::Debug for CombinerNoKeys
+{
+    type EncapsulationKey = KemAuthWithKdfEncapsulator<KEM, COM, KDF, L>;
+    type DecapsulationKey = KemAuthWithKdfDecapsulator<KEM, COM, KDF, L>;
+    type SharedKeySize = L;
+    type CiphertextSize = KEM::CiphertextSize;
+}
+
+
+impl<KEM, COM, KDF,L> Eq for KemAuthWithKdf<KEM,COM,KDF,L>
+{}
+impl<KEM, COM, KDF,L> PartialEq for KemAuthWithKdf<KEM,COM,KDF,L>
+{
+    fn eq(&self, other: &Self) -> bool {
+        self.0 == other.0 && self.1 == other.1 && self.2 == other.2 && self.3 == other.3
+    }
+}
+impl<KEM, COM, KDF,L> Ord for KemAuthWithKdf<KEM,COM,KDF,L>
+{
+    fn cmp(&self, _other: &Self) -> std::cmp::Ordering {
+        todo!()
+    }
+}
+impl<KEM, COM, KDF,L> PartialOrd for KemAuthWithKdf<KEM,COM,KDF,L>
+{
+    fn partial_cmp(&self, _other: &Self) -> Option<std::cmp::Ordering> {
+        todo!()
+    }
+}
+impl<KEM, COM, KDF,L> std::fmt::Debug for KemAuthWithKdf<KEM,COM,KDF,L>
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("CombinerNoKeys").finish()
+        f.debug_tuple("KemAuthWithKdf").field(&self.0).field(&self.1).field(&self.2).field(&self.3).finish()
     }
-}
-impl Default for CombinerNoKeys
-{
-    fn default() -> Self {
-        Self {  }
-    }
-}
-impl Ord for CombinerNoKeys
-{
-    fn cmp(&self, _other: &Self) -> std::cmp::Ordering {
-        todo!()
-    }
-}
-impl PartialOrd for CombinerNoKeys
-{
-    fn partial_cmp(&self, _other: &Self) -> Option<std::cmp::Ordering> {
-        todo!()
-    }
-}
-impl PartialEq for CombinerNoKeys
-{
-    fn eq(&self, _other: &Self) -> bool {
-        true
-    }
-}
-impl Eq for CombinerNoKeys
-{
-
 }
 
-impl Copy for CombinerNoKeys
-{
-
-}
-impl Clone for CombinerNoKeys
+impl<KEM, COM, KDF,L> Clone for KemAuthWithKdf<KEM,COM,KDF,L>
 {
     fn clone(&self) -> Self {
-        Self {  }
+        Self(self.0.clone(), self.1.clone(), self.2.clone(), self.3.clone())
+    }
+}
+impl<KEM, COM, KDF,L> Copy for KemAuthWithKdf<KEM,COM,KDF,L>
+{
+
+}
+impl<KEM, COM, KDF,L> Default for KemAuthWithKdf<KEM,COM,KDF,L>
+{
+    fn default() -> Self {
+        Self(Default::default(), Default::default(), Default::default(), Default::default())
     }
 }
 
 
 
-
-
-impl<KEM, COM, KDF, N> Ord for KemWithKdfEncapsulator<KEM,COM,KDF,N>
-where KEM: Capsulator
+impl<KEM, COM, KDF,L> Decapsulator for KemAuthWithKdfDecapsulator<KEM,COM,KDF,L>
+where KEM: Kem,
+    KDF: Kdf<L>+ Default+ Send + Sync + 'static,
+    L: ArraySize + Send + Sync + 'static,
+    COM: Combiner + Send + Sync + 'static,
+    KEM::DecapsulationKey: Decapsulate,
 {
-    fn cmp(&self, _other: &Self) -> std::cmp::Ordering {
+    type Kem = KemAuthWithKdf<KEM,COM,KDF,L>;
+
+    fn encapsulation_key(&self) -> &kem::EncapsulationKey<Self::Kem> {
         todo!()
     }
 }
-impl<KEM, COM, KDF, N> Eq for KemWithKdfEncapsulator<KEM,COM,KDF,N>
-where KEM: Capsulator
+impl<KEM, COM, KDF,L> Decapsulate for KemAuthWithKdfDecapsulator<KEM,COM,KDF,L>
+where KEM: Kem,
+    KDF: Default + Kdf<L> + Send + Sync + 'static,
+    L: ArraySize + Send + Sync + 'static,
+    COM: Combiner + Send + Sync + 'static,
+    KEM::DecapsulationKey: Decapsulate,
 {
+    fn decapsulate(&self, ct: &kem::Ciphertext<Self::Kem>) -> kem::SharedKey<Self::Kem> {
+        let raw_shared_secret = self.decapsulator.decapsulate(ct.as_slice().try_into().unwrap());
+        COM::combine(raw_shared_secret, ct, self.decapsulator.encapsulation_key(), &self.kdf).unwrap()
+    }
+}
+
+impl<KEM, COM, KDF,L> kem::Generate for KemAuthWithKdfDecapsulator<KEM,COM,KDF,L>
+where KEM: Kem
+{
+    fn try_generate_from_rng<R: rand::TryCryptoRng + ?Sized>(_rng: &mut R) -> Result<Self, R::Error> {
+        todo!()
+    }
+}
+
+
+impl<KEM, COM, KDF,L> Encapsulate for KemAuthWithKdfEncapsulator<KEM,COM,KDF,L>
+where KEM: Kem,
+    KDF: Kdf<L> + Default+ Send + Sync + 'static,
+    L: ArraySize + Send + Sync + 'static,
+    COM: Combiner + Send + Sync + 'static,
+    <KEM as Kem>::DecapsulationKey: Decapsulate,
+{
+    type Kem = KemAuthWithKdf<KEM,COM,KDF,L>;
+
+    fn encapsulate_with_rng<R>(&self, _rng: &mut R) -> (kem::Ciphertext<Self::Kem>, kem::SharedKey<Self::Kem>)
+    where
+        R: rand::prelude::CryptoRng + ?Sized {
+
+        let (ciphertext, raw_shared_secret) = self.encapsulator.encapsulate_with_rng(_rng);
+        let shared_secret = COM::combine(raw_shared_secret, &ciphertext, &self.encapsulator, &self.kdf).unwrap();
+        (ciphertext, shared_secret)   
+    }
+}
+impl<KEM, COM, KDF,L> EncapsulateDeterministic for KemAuthWithKdfEncapsulator<KEM,COM,KDF,L>
+where KEM: kem::Kem + Kem,
+    KDF: Kdf<L>+ Default+ Send + Sync + 'static,
+    L: ArraySize + Send + Sync + 'static,
+    COM: Combiner + Send + Sync + 'static,
+    KEM::DecapsulationKey: Decapsulate,
+    KEM::EncapsulationKey: EncapsulateDeterministic<Kem=KEM>,
+{
+    type Kem = KemAuthWithKdf<KEM,COM,KDF,L>;
+    type SeedSize = <KEM::EncapsulationKey as EncapsulateDeterministic>::SeedSize;
     
-}
-impl<KEM, COM, KDF, N> PartialOrd for KemWithKdfEncapsulator<KEM,COM,KDF,N>
-where KEM: Capsulator
-{
-    fn partial_cmp(&self, _other: &Self) -> Option<std::cmp::Ordering> {
-        todo!()
-        // match self.encapsulator.partial_cmp(&other.encapsulator) {
-        //     Some(core::cmp::Ordering::Equal) => {}
-        //     ord => return ord,
-        // }
-        // match self.kdf.partial_cmp(&other.kdf) {
-        //     Some(core::cmp::Ordering::Equal) => {}
-        //     ord => return ord,
-        // }
-        // match self.phantom.partial_cmp(&other.phantom) {
-        //     Some(core::cmp::Ordering::Equal) => {}
-        //     ord => return ord,
-        // }
-        // self.phantom2.partial_cmp(&other.phantom2)
+    fn encapsulate_deterministic(&self, seed: &[u8]) -> (kem::Ciphertext<Self::Kem>, kem::SharedKey<Self::Kem>) {
+        let (ciphertext, raw_shared_secret) = self.encapsulator.encapsulate_deterministic(seed);
+        let shared_secret = COM::combine(raw_shared_secret, &ciphertext, &self.encapsulator, &self.kdf).unwrap();
+        (ciphertext, shared_secret)
     }
 }
-impl<KEM, COM, KDF, N> PartialEq for KemWithKdfEncapsulator<KEM,COM,KDF,N>
-where KEM: Capsulator
+
+impl<KEM, COM, KDF,L> Clone for KemAuthWithKdfEncapsulator<KEM,COM,KDF,L>
+where KEM: Kem
 {
-    fn eq(&self, _other: &Self) -> bool {
+    fn clone(&self) -> Self {
         todo!()
-        //self.encapsulator == other.encapsulator && self.kdf == other.kdf && self.phantom == other.phantom && self.phantom2 == other.phantom2
     }
 }
-impl<KEM, COM, KDF, N> std::fmt::Debug for KemWithKdfEncapsulator<KEM,COM,KDF,N>
-where KEM: Capsulator
+
+impl<KEM, COM, KDF,L> KeySizeUser for KemAuthWithKdfEncapsulator<KEM,COM,KDF,L>
+where KEM: Kem
+{
+    type KeySize = cipher::consts::U32;
+}
+
+impl<KEM, COM, KDF,L> TryKeyInit for KemAuthWithKdfEncapsulator<KEM,COM,KDF,L>
+where KEM: Kem
+{
+    fn new(_key: &kem::Key<Self>) -> Result<Self, kem::InvalidKey> {
+        todo!()
+    }
+}
+
+impl<KEM, COM, KDF,L> KeyExport for KemAuthWithKdfEncapsulator<KEM,COM,KDF,L>
+where KEM: Kem
+{
+    fn to_bytes(&self) -> kem::Key<Self> {
+        todo!()
+    }
+}
+
+impl<KEM, COM, KDF,L> std::fmt::Debug for KemAuthWithKdfEncapsulator<KEM,COM,KDF,L>
+where KEM: Kem
 {
     fn fmt(&self, _f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         todo!()
-        //f.debug_struct("KemWithKdfEncapsulator").field("encapsulator", &self.encapsulator).field("kdf", &self.kdf).field("phantom", &self.phantom).field("phantom2", &self.phantom2).finish()
     }
 }
-impl<KEM, COM, KDF, N> Clone for KemWithKdfEncapsulator<KEM,COM,KDF,N>
-where KEM: Capsulator
+
+impl<KEM, COM, KDF,L> Eq for KemAuthWithKdfEncapsulator<KEM,COM,KDF,L>
+where KEM: Kem
 {
-    fn clone(&self) -> Self {
+
+}
+impl<KEM, COM, KDF,L> PartialEq for KemAuthWithKdfEncapsulator<KEM,COM,KDF,L>
+where KEM: Kem
+{
+    fn eq(&self, _other: &Self) -> bool {
         todo!()
-        //Self { encapsulator: self.encapsulator.clone(), kdf: self.kdf.clone(), phantom: self.phantom.clone(), phantom2: self.phantom2.clone() }
     }
 }
+impl<KEM, COM, KDF,L> Ord for KemAuthWithKdfEncapsulator<KEM,COM,KDF,L>
+where KEM: Kem
+{
+    fn cmp(&self, _other: &Self) -> std::cmp::Ordering {
+        todo!()
+    }
+}
+impl<KEM, COM, KDF,L> PartialOrd for KemAuthWithKdfEncapsulator<KEM,COM,KDF,L>
+where KEM: Kem
+{
+    fn partial_cmp(&self, _other: &Self) -> Option<std::cmp::Ordering> {
+        todo!()
+    }
+}
+
+
+

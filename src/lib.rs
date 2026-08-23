@@ -4,42 +4,43 @@
 //! The root of the crate contains traits and common structures, whilst specific implementations are
 //! included in the sub modules
 //! 
-use std::borrow::Cow;
 use std::fmt::Debug;
 
 #[allow(unused)]
 use std::{array::TryFromSliceError, ops::{Add, Rem}};
+#[cfg(feature="rustcrypto-aeskw")]
+use cipher::typenum::{NonZero, Zero, Sum};
 #[allow(unused)]
-use cipher::{BlockCipherDecrypt, BlockCipherEncrypt, typenum::Zero};
-use cipher::{KeyInit, KeySizeUser};
-use crate::kem_with_kdf::{CombinerEphemOnly, KemWithKdf};
-#[cfg(all(feature="rustcrypto-ml-kem"))]
-use crate::mlkem::{WrappedMlKem768,WrappedMlKem1024};
+use cipher::{BlockCipherDecrypt, BlockCipherEncrypt, KeyInit, KeySizeUser};
+#[allow(unused)]
+use cipher::consts::{U8, U16, U32, U384, U256, U512};
+pub use kem::{Kem, Ciphertext, SharedKey, TryDecapsulate, Encapsulate, TryKeyInit, InvalidKey};
+
+use crate::kem_with_kdf::{CombinerCiphertext, KemWithKdf};
+
 
 #[cfg(all(feature="rustcrypto-ml-kem", feature="rustcrypto-x25519", feature="rustcrypto-sha3"))]
-use crate::{hybrid::QsfCombiner2, x25519kem::X25519Capsulator, xwing::LabelXWing};
+use crate::{hybrid::QsfCombiner2, x25519kem::X25519Kem, xwing::LabelXWing};
 
-    use kdfs::iso11770_6::Okdf3;
+#[allow(unused)]
+use kdfs::iso11770_6::Okdf3;
 
 #[cfg(all(feature="rustcrypto-sha3"))]
 use sha3::Sha3_256;
-#[cfg(all(feature="rustcrypto-sha3"))]
-use shake::Shake256;
 
-use crate::eckem::{SeedAsScalar};
-use crate::hybrid::{QsfCombiner,ExpandSeed,HybridKem};
+#[cfg(all(feature="rustcrypto-ml-kem"))]
+use crate::hybrid::{QsfCombiner,HybridKem};
 
 use crate::eckem::{EcdhKemUncompressed};
 #[cfg(all(feature="rustcrypto-rsa", feature="rustcrypto-sha2"))]
 use crate::rsakem::RsaOaepKem;
 #[cfg(all(feature="rustcrypto-x448"))]
-use crate::{hybrid::SplitSeed, x448kem::X448Capsulator};
+use crate::{x448kem::X448Kem};
 #[cfg(all(feature="rustcrypto-x25519"))]
 use crate::xwing::XwingMlKem768X25519;
-    #[cfg(all(feature="rustcrypto-rsa", feature="rustcrypto-sha2"))]
-use cipher::consts::U256;
-use cipher::consts::{U32, U384, U512};
-    use const_oid::{AssociatedOid,ObjectIdentifier};
+#[allow(unused)]
+#[cfg(all(feature="oid"))]
+use const_oid::{AssociatedOid,ObjectIdentifier};
 use kdfs::Label;
 
 #[cfg(all(feature="rustcrypto-p256"))]
@@ -53,8 +54,7 @@ use sha2::Sha256;
 
 
 
-#[allow(unused)]
-use generic_array::ArrayLength;
+
 #[allow(unused)]
 use elliptic_curve::{point::PointCompression, CurveArithmetic};
 #[allow(unused)]
@@ -71,48 +71,13 @@ use crate::eckem::EcdhKemCompressed;
 #[cfg(feature="rustcrypto-rsa")]
 use crate::rsakem::{RsaOrigKem};
 
-
-use eckem::EcUncompressedEncoder;
-use eckem::{EcMqvAuthDecapsulator, EcMqvAuthEncapsulatorUncompressed, EcdhAuthCapsulatorUncompressed, EcdhAuthDecapsulator, EcdhAuthEncapsulatorCompressed};
+use eckem::{EcdhAuthKemUncompressed};
 
 use kdfs::{nistsp800_56::ConcatKdf};
-
-
-    use kdfs::iso18033_2::{Kdf1, Kdf2};
-
-
-
-
-pub extern crate generic_array;
-pub use generic_array::{GenericArray};
-#[allow(unused)]
-use generic_array::typenum::{NonZero, Sum, consts::*};
-    
-use crate::eckem::{EcdhKemRaw};
-use crate::kem_with_kdf::{JwaKdf};
+use kdfs::iso18033_2::{Kdf1, Kdf2};
 
 pub use kdfs::hybrid_array::{Array, ArraySize};
 pub use rand_core::{CryptoRngCore, CryptoRng, RngCore, OsRng};
-
-    
-#[cfg(all(feature="rustcrypto-sha2", feature ="rustcrypto-hmac"))]
-use crate::mlkem::WrappedMlKem512;
-
-
-pub trait Encapsulate<EK, SS> {
-    /// Encapsulation error
-    type Error: Debug;
-
-    /// Encapsulates a fresh shared secret
-    fn encapsulate(&self, rng: &mut impl CryptoRngCore) -> Result<(EK, SS), Self::Error>;
-}
-pub trait Decapsulate<EK, SS> {
-    /// Decapsulation error
-    type Error: Debug;
-
-    /// Decapsulates the given encapsulated key
-    fn decapsulate(&self, encapsulated_key: &EK) -> Result<SS, Self::Error>;
-}
 
 pub mod kem_with_kdf;
 
@@ -125,8 +90,8 @@ pub mod x25519kem;
 #[cfg(feature="rustcrypto-x448")]
 pub mod x448kem;
 
-#[cfg(feature="rustcrypto-ml-kem")]
-pub mod ml_kem;
+// #[cfg(feature="rustcrypto-ml-kem")]
+// pub mod ml_kem;
 
 pub mod hybrid;
 
@@ -167,24 +132,33 @@ pub trait FromKeys {
     fn from_keys ( pub_key: Self::PublicKey, priv_key: Self::PrivateKey ) -> Self;
 }
 
-pub trait EncapsulateDeterministic2<EK, SS> {
-    /// Encapsulation error
-    type Error;
-    /// Nominal seed size, but not strictly requirement
-    type SeedSize: ArraySize;
+// pub trait EncapsulateDeterministic2<EK, SS> {
+//     /// Encapsulation error
+//     type Error;
+//     /// Nominal seed size, but not strictly requirement
+//     type SeedSize: ArraySize;
 
-    /// Encapsulates a fresh shared secret
+//     /// Encapsulates a fresh shared secret
+//     //fn encapsulate_deterministic(&self, seed: &Array<u8, Self::SeedSize>) -> Result<(EK, SS), Self::Error>;
+//     fn encapsulate_deterministic(&self, seed: &[u8]) -> Result<(EK, SS), Self::Error>;
+// }
+
+pub trait EncapsulateDeterministic {
+
+    type Kem: kem::Kem;
+    type SeedSize: ArraySize;
+    
     //fn encapsulate_deterministic(&self, seed: &Array<u8, Self::SeedSize>) -> Result<(EK, SS), Self::Error>;
-    fn encapsulate_deterministic(&self, seed: &[u8]) -> Result<(EK, SS), Self::Error>;
+    fn encapsulate_deterministic(&self, seed: &[u8]) -> (Ciphertext<Self::Kem>, SharedKey<Self::Kem>);
 }
 
 /// Trait for getting the encapsulator from a public key, this is used for the test vectors to verify that the public key encodes to the correct byte array
-pub trait GetEncapsulator {
-    /// The type of the encapsulator, this is used for the test vectors to verify that the public key encodes to the correct byte array
-    type Encapsulator;
-    /// Returns a reference to the underlying encapsulator, this is used for the test vectors to verify that the public key encodes to the correct byte array
-    fn encapsulation_key(&self) -> Self::Encapsulator;
-}
+// pub trait GetEncapsulator {
+//     /// The type of the encapsulator, this is used for the test vectors to verify that the public key encodes to the correct byte array
+//     type Encapsulator;
+//     /// Returns a reference to the underlying encapsulator, this is used for the test vectors to verify that the public key encodes to the correct byte array
+//     fn encapsulation_key_old(&self) -> Self::Encapsulator;
+// }
 
 /// Trait for setting the KDF
 pub trait SetKdf {
@@ -214,45 +188,29 @@ pub trait SetKdf {
 //pub type Encoded<T> = GenericArray<u8, <T as EncodedSizeUser2>::EncodedSize>;
 
 
-pub trait EncodeHybridArray<T> {
-    type EncodedLen: ArraySize;
-    fn encode ( point: &T ) -> Array<u8, Self::EncodedLen>;
-}
-
-//
-/// Used for encoding a public key to a byte array
-pub trait EncodeGenericArray<P> {
-    //type EncodedLen: ArrayLength<u8>;
-    type EncodedLen: ArrayLength;
-    fn encode(source: &P) -> GenericArray<u8, Self::EncodedLen>;
-}
 
 
-/// Inverse function which accepts a variable length byte slice and returns a public key
-pub trait DecodeSlice<P> {
-    type Error;
-    fn decode(encoded_bytes: &[u8]) -> Result<P, Self::Error>;
-}
+
 
 /// Inverse function which accepts a fixed length byte array and returns a public key
-pub trait DecodeGenericArray<P> {
-    type EncodedLen: ArrayLength; //<u8>;
-    type Error;
-    fn decode(encoded_bytes: &GenericArray<u8, Self::EncodedLen>) -> Result<P, Self::Error>;
-}
+// pub trait DecodeArray<P> {
+//     type EncodedLen: ArraySize; //<u8>;
+//     type Error;
+//     fn decode(encoded_bytes: &Array<u8, Self::EncodedLen>) -> Result<P, Self::Error>;
+// }
 
 /// Used for encoding a public key of the sender to a byte array
-pub trait GetSenderPublicKeyBytes {
-    type EncodedLen: ArrayLength; //<u8>;
-    fn get_sender_public_key_bytes(&self) -> GenericArray<u8, Self::EncodedLen>;
-}
+// pub trait GetSenderPublicKeyBytes {
+//     type EncodedLen: ArraySize; //<u8>;
+//     fn get_sender_public_key_bytes(&self) -> Array<u8, Self::EncodedLen>;
+// }
 
 /// Used for encoding a public key of the recipient to a byte array
-pub trait GetRecipientPublicKeyBytes {
-    type EncodedLen: ArrayLength; //<u8>;
-    //fn get_recipient_public_key_bytes(&self) -> GenericArray<u8, Self::EncodedLen>;
-    fn get_recipient_public_key_bytes<'a>(&'a self) -> Cow<'a, [u8]>;
-}
+// pub trait GetRecipientPublicKeyBytes {
+//     type EncodedLen: ArraySize; //<u8>;
+//     //fn get_recipient_public_key_bytes(&self) -> GenericArray<u8, Self::EncodedLen>;
+//     fn get_recipient_public_key_bytes<'a>(&'a self) -> Cow<'a, [u8]>;
+// }
 
 
 
@@ -271,27 +229,27 @@ pub trait GetRecipientPublicKeyBytes {
 
 
 /// Trait for encapsulators which support key wrapping, this is used for the test vectors to verify that the encapsulator can wrap a key correctly
-pub trait EncapsulateWithKeyWrap<EK,SS1, KW, SS2> : Encapsulate<EK,SS1>{
+pub trait EncapsulateWithKeyWrap<EK,SS1, KW, SS2> : Encapsulate{
     /// Size of the wrapping key
     type LW: ArraySize;
     /// Size of the wrapped key
     type LK: ArraySize;
     /// Encapsulates a fresh shared secret and wraps a key, the shared secret is used to derive a wrapping key which is used to wrap the key, the encapsulated key and the wrapped key are returned
-    fn encapsulate_and_wrap(&self, rng: &mut impl CryptoRngCore, key: &Array<u8, Self::LK>) -> Result<(EK, Array<u8, Self::LW>), Self::Error>;
+    fn encapsulate_and_wrap(&self, key: &Array<u8, Self::LK>) -> Result<(EK, Array<u8, Self::LW>), ()>;
 }
 
 /// Trait for encapsulators which support deterministic key wrapping, this is used for the test vectors to verify that the encapsulator can wrap a key correctly using a deterministic seed, this is used for the test vectors to verify that the encapsulator can wrap a key correctly using a deterministic seed
-pub trait EncapsulateWithKeyWrapDeterministic<EK,SS1, KW, SS2> : EncapsulateDeterministic2<EK,SS1>{
+pub trait EncapsulateWithKeyWrapDeterministic<EK,SS1, KW, SS2> : EncapsulateDeterministic { //2<EK,SS1>{
     /// Size of the wrapping key
     type LW: ArraySize;
     /// Size of the wrapped key
     type LK: ArraySize;
     /// Encapsulates a fresh shared secret and wraps a key using a deterministic seed, the shared secret is used to derive a wrapping key which is used to wrap the key, the encapsulated key and the wrapped key are returned
-    fn encapsulate_and_wrap_deterministic(&self, seed: &[u8], key: &Array<u8, Self::LK>) -> Result<(EK, Array<u8, Self::LW>), Self::Error>;
+    fn encapsulate_and_wrap_deterministic(&self, seed: &[u8], key: &Array<u8, Self::LK>) -> Result<(EK, Array<u8, Self::LW>), ()>;
 }
 
 /// Trait for decapsulators which support key unwrapping, this is used for the test vectors to verify that the decapsulator can unwrap a key correctly
-pub trait DecapsulateWithKeyWrap<EK,SS1,KW,SS2> : Decapsulate<EK,SS1>
+pub trait TryDecapsulateWithKeyWrap<EK,SS1,KW,SS2> : TryDecapsulate //DecapsulateOld<EK,SS1>
 {
     type Error;
     /// Size of the wrapping key
@@ -299,14 +257,15 @@ pub trait DecapsulateWithKeyWrap<EK,SS1,KW,SS2> : Decapsulate<EK,SS1>
     /// Size of the wrapped key
     type LK: ArraySize;
     /// Decapsulates a shared secret and unwraps a key, the shared secret is used to derive a wrapping key which is used to unwrap the key, the unwrapped key is returned
-    fn decapsulate_and_unwrap(&self, encapsulated_key: &EK, wrapped_key: &Array<u8, Self::LW>) -> Result<Array<u8, Self::LK>, <Self as DecapsulateWithKeyWrap<EK, SS1, KW, SS2>>::Error>;
+    //fn decapsulate_and_unwrap(&self, encapsulated_key: &EK, wrapped_key: &Array<u8, Self::LW>) -> Result<Array<u8, Self::LK>, <Self as DecapsulateWithKeyWrap<EK, SS1, KW, SS2>>::Error>;
+    fn decapsulate_and_unwrap(&self, encapsulated_key: &EK, wrapped_key: &Array<u8, Self::LW>) -> Result<Array<u8, Self::LK>, <Self as TryDecapsulateWithKeyWrap<EK, SS1, KW, SS2>>::Error>;
 }
 
 
 #[cfg(feature="rustcrypto-aeskw")]
-impl<T,EK,A,SSL> DecapsulateWithKeyWrap<EK,Array<u8, A::KeySize>, aes_kw::AesKw<A>, SSL> for T
+impl<T,A,SSL> TryDecapsulateWithKeyWrap<Array<u8, <T::Kem as Kem>::CiphertextSize>,Array<u8, A::KeySize>, aes_kw::AesKw<A>, SSL> for T
 where 
-    T: Decapsulate<EK,Array<u8, A::KeySize>>,
+    T: TryDecapsulate, //Old<EK,Array<u8, A::KeySize>>,
     SSL: ArraySize + Add<U8> + NonZero + Rem<U8>,
     <SSL as Add<U8>>::Output: ArraySize,
     <SSL as Rem<U8>>::Output: Zero,
@@ -316,43 +275,44 @@ where
     type LW = Sum<SSL, U8>;
     type LK = SSL;
     
-    fn decapsulate_and_unwrap(&self, encapsulated_key: &EK, wrapped_key: &Array<u8, Self::LW>) 
-    -> Result<Array<u8, SSL>, <Self as DecapsulateWithKeyWrap<EK, Array<u8, A::KeySize>, aes_kw::AesKw<A>, SSL>>::Error> {
+    //fn decapsulate_and_unwrap(&self, encapsulated_key: &EK, wrapped_key: &Array<u8, Self::LW>) 
+    fn decapsulate_and_unwrap(&self, encapsulated_key: &Array<u8,<T::Kem as Kem>::CiphertextSize>, wrapped_key: &Array<u8, Self::LW>) 
+    //-> Result<Array<u8, SSL>, <Self as DecapsulateWithKeyWrap<EK, Array<u8, A::KeySize>, aes_kw::AesKw<A>, SSL>>::Error> {
+    -> Result<Array<u8, SSL>, <Self as TryDecapsulateWithKeyWrap<Array<u8, <T::Kem as Kem>::CiphertextSize>, Array<u8, A::KeySize>, aes_kw::AesKw<A>, SSL>>::Error> {
        
-        let shared_secret2 = self.decapsulate(encapsulated_key).unwrap();
+        let shared_secret2 = self.try_decapsulate(encapsulated_key).unwrap();
         
-        let wrapping_key = aes_kw::AesKw::<A>::new(&shared_secret2);
+        let wrapping_key = aes_kw::AesKw::<A>::new(&shared_secret2.as_slice().try_into().unwrap());
         let cek: Array<u8, Self::LK> = wrapping_key.unwrap_fixed_key(wrapped_key).unwrap();
         Ok(cek)
     }
 }
  
 #[cfg(feature="rustcrypto-aeskw")]
-impl<T,EK,A,SSL> EncapsulateWithKeyWrap<EK,Array<u8, A::KeySize>, aes_kw::AesKw<A>, SSL> for T
+impl<T,A,SSL> EncapsulateWithKeyWrap<Array<u8, <T::Kem as Kem>::CiphertextSize>,Array<u8, A::KeySize>, aes_kw::AesKw<A>, SSL> for T
 where 
-    T: Encapsulate<EK,Array<u8, A::KeySize>>,
+    T: Encapsulate, //<EK,Array<u8, A::KeySize>>,
     SSL: ArraySize + Add<U8> + NonZero + Rem<U8>,
     <SSL as Add<U8>>::Output: ArraySize,
     <SSL as Rem<U8>>::Output: Zero,
     A: BlockCipherEncrypt<BlockSize = U16> + cipher::KeyInit,
 {
-    //type Error = ();
     type LW = Sum<SSL, U8>;
     type LK = SSL;
     
-    fn encapsulate_and_wrap(&self, rng: &mut impl CryptoRngCore, key: &Array<u8, Self::LK>) -> Result<(EK, Array<u8, Self::LW>), Self::Error> {
-        let (ek, shared_secret2) = self.encapsulate(rng).unwrap();
+    fn encapsulate_and_wrap(&self, key: &Array<u8, Self::LK>) -> Result<(Array<u8, <T::Kem as Kem>::CiphertextSize>, Array<u8, Self::LW>), ()> {
+        let (ek, shared_secret2) = self.encapsulate(); //_with_rng(rng);
         use cipher::KeyInit;
-        let wrapping_key = aes_kw::AesKw::<A>::new(&shared_secret2);
+        let wrapping_key = aes_kw::AesKw::<A>::new(&shared_secret2.as_slice().try_into().unwrap());
         let cek: Array<u8, Self::LW> = wrapping_key.wrap_fixed_key(&key);
         Ok((ek, cek))
     }
 }
 
 #[cfg(feature="rustcrypto-aeskw")]
-impl<T,EK,A,SSL> EncapsulateWithKeyWrapDeterministic<EK,Array<u8, A::KeySize>, aes_kw::AesKw<A>, SSL> for T
+impl<T,A,SSL> EncapsulateWithKeyWrapDeterministic<Array<u8, <T::Kem as Kem>::CiphertextSize>,Array<u8, A::KeySize>, aes_kw::AesKw<A>, SSL> for T
 where 
-    T: EncapsulateDeterministic2<EK,Array<u8, A::KeySize>>,
+    T: EncapsulateDeterministic, //2<EK,Array<u8, A::KeySize>>,
     SSL: ArraySize + Add<U8> + NonZero + Rem<U8>,
     <SSL as Add<U8>>::Output: ArraySize,
     <SSL as Rem<U8>>::Output: Zero,
@@ -361,71 +321,71 @@ where
     type LW = Sum<SSL, U8>;
     type LK = SSL;
     
-    fn encapsulate_and_wrap_deterministic(&self, seed: &[u8]/*&Array<u8, Self::SeedSize>*/, key: &Array<u8, Self::LK>) -> Result<(EK, Array<u8, Self::LW>), Self::Error> {
-        let Ok((ek, shared_secret2)) = self.encapsulate_deterministic(seed) else { panic! ( "AAAgh")};
+    fn encapsulate_and_wrap_deterministic(&self, seed: &[u8]/*&Array<u8, Self::SeedSize>*/, key: &Array<u8, Self::LK>) -> Result<(Array<u8, <T::Kem as Kem>::CiphertextSize>, Array<u8, Self::LW>), ()> {
+        let (ek, shared_secret2) = self.encapsulate_deterministic(seed); // else { panic! ( "AAAgh")};
         use cipher::KeyInit;
-        let wrapping_key = aes_kw::AesKw::<A>::new(&shared_secret2);
+        let wrapping_key = aes_kw::AesKw::<A>::new(&shared_secret2.as_slice().try_into().unwrap());
         let cek: Array<u8, Self::LW> = wrapping_key.wrap_fixed_key(&key);
         Ok((ek, cek))
     }
 }
 
 
-///
-/// Trait used for types which support both Encapsulation and Decapsulation.
-/// Default implementations are provided for new_encapsulator and new_decapsulator
-///
-pub trait Capsulator{
-    type Encapsulator: Encapsulate<GenericArray<u8, Self::CiphertextSize>, Array<u8, Self::SharedKeySize>>;
-    type Decapsulator: Decapsulate<GenericArray<u8, Self::CiphertextSize>, Array<u8, Self::SharedKeySize>>;
-    type SharedKeySize: ArraySize;
-    type CiphertextSize: ArrayLength;
 
-    fn generate_from_rng ( rng: &mut impl CryptoRngCore ) -> (Self::Encapsulator, Self::Decapsulator);
+pub trait KemExtensions : Kem {
 
-    fn from_public_key (public_key: <Self::Encapsulator as FromKey>::Key) -> Self::Encapsulator
-        where Self::Encapsulator: FromKey
+    fn from_public_key (public_key: <Self::EncapsulationKey as FromKey>::Key) -> Self::EncapsulationKey
+        where Self::EncapsulationKey: FromKey
     {
-        return Self::Encapsulator::from_key(public_key);
+        return Self::EncapsulationKey::from_key(public_key);
     }
-    fn from_private_key (priv_key: <Self::Decapsulator as FromKey>::Key) -> Self::Decapsulator
-        where Self::Decapsulator: FromKey
+  
+    fn from_private_key (priv_key: <Self::DecapsulationKey as FromKey>::Key) -> Self::DecapsulationKey
+        where Self::DecapsulationKey: FromKey
     {
-        return Self::Decapsulator::from_key(priv_key);
+        return Self::DecapsulationKey::from_key(priv_key);
     }
 
-    fn from_bytes_encap ( bytes: &Array::<u8, <Self::Encapsulator as KeySizeUser>::KeySize> ) -> Self::Encapsulator
-    where Self::Encapsulator: KeySizeUser + KeyInit,
+    fn from_bytes_encap ( bytes: &Array::<u8, <Self::EncapsulationKey as KeySizeUser>::KeySize> ) -> Self::EncapsulationKey
+    where Self::EncapsulationKey: KeyInit,
     {
-        Self::Encapsulator::new(bytes)
+        <Self::EncapsulationKey as KeyInit>::new(bytes)
+    }
+    fn try_from_bytes_encap ( bytes: &Array::<u8, <Self::EncapsulationKey as KeySizeUser>::KeySize> ) -> Result<Self::EncapsulationKey, InvalidKey>
+    where Self::EncapsulationKey: TryKeyInit,
+    {
+        Self::EncapsulationKey::new(bytes)
+    }
+    fn try_from_slice_encap ( bytes: &[u8] ) -> Result<Self::EncapsulationKey, InvalidKey>
+    where Self::EncapsulationKey: TryKeyInit
+    {
+        Self::EncapsulationKey::new_from_slice(bytes)
     }
 
-    fn from_bytes_decap ( bytes: &Array::<u8, <Self::Decapsulator as KeySizeUser>::KeySize> ) -> Self::Decapsulator
-    where Self::Decapsulator: KeySizeUser + KeyInit,
+    fn from_bytes_decap ( bytes: &Array::<u8, <Self::DecapsulationKey as KeySizeUser>::KeySize> ) -> Self::DecapsulationKey
+    where Self::DecapsulationKey: KeyInit,
     {
-        Self::Decapsulator::new(bytes)
+        Self::DecapsulationKey::new(bytes)
     }
-    // fn from_slice_encap ( bytes: &[u8] ) -> Self::Encapsulator
-    // where Self::Encapsulator: for<'a> From<&'a [u8]>,
-    // {
-    //     Self::Encapsulator::from(bytes)
-    // }
-    fn try_from_slice_encap ( bytes: &[u8] ) -> Result<Self::Encapsulator, <<Self as Capsulator>::Encapsulator as TryFrom<&[u8]>>::Error>
-    where Self::Encapsulator: for<'a> TryFrom<&'a [u8]>,
+    fn try_from_bytes_decap ( bytes: &Array::<u8, <Self::DecapsulationKey as KeySizeUser>::KeySize> ) -> Self::DecapsulationKey
+    where Self::DecapsulationKey: TryKeyInit,
     {
-        Self::Encapsulator::try_from(bytes)
+        Self::DecapsulationKey::new(bytes).unwrap()
     }
-    fn try_from_slice_decap ( bytes: &[u8] ) -> Result<Self::Decapsulator, <<Self as Capsulator>::Decapsulator as TryFrom<&[u8]>>::Error>
-    where Self::Decapsulator: for<'a> TryFrom<&'a[u8]>
+    fn try_from_slice_decap ( bytes: &[u8] ) -> Result<Self::DecapsulationKey, InvalidKey>
+    where Self::DecapsulationKey: TryKeyInit
     {
-        Self::Decapsulator::try_from(bytes)
+        Self::DecapsulationKey::new_from_slice(bytes)
     }
 }
 
+impl<T: Kem> KemExtensions for T
+{}
+
 /// Ciphertext, a fixed size field representing the encapsulated key
-pub type Ciphertext<C> = GenericArray<u8, <C as Capsulator>::CiphertextSize>;
+//pub type Ciphertext<C> = Array<u8, <C as Kem>::CiphertextSize>;
 /// SharedKey, a fixed size type containing the shared key
-pub type SharedKey<C> = Array<u8, <C as Capsulator>::SharedKeySize>;
+//pub type SharedKey<C> = Array<u8, <C as Kem>::SharedKeySize>;
 
 /// Trait for generating an encapsulator and decapsulator from a seed, the seed is not necessarily the same size as the private key, but it should be of a fixed size
 pub trait GenerateDeterministic3 {
@@ -434,40 +394,28 @@ pub trait GenerateDeterministic3 {
     type Public;
     type Private;
     type Error;
-    /// Generate a key pair from a seed, the seed is not necessarily the same size as the private key, but it should be of a fixed size
-    fn generate_deterministic(seed: &Array::<u8, Self::SeedSize>) -> Result<(Self::Public, Self::Private), Self::Error>;
-    //fn generate_deterministic(seed: &Array::<u8, <Self::Private as GenerateDeterministic4>::SeedSize>) -> Result<(Self::Public, Self::Private), Self::Error>
-    // where Self::Private: GenerateDeterministic4 + GetEncapsulator<Encapsulator=Self::Public
-    // {
-    //     let Ok(decapsulator) = Self::Private::generate_deterministic(seed) else { panic! ( "unhandled")};
-    //     let encapsulator = decapsulator.encapsulation_key();
-    //     Ok ((encapsulator, decapsulator))
-    // }
 
+    fn generate_deterministic(seed: &Array::<u8, Self::SeedSize>) -> Result<(Self::Public, Self::Private), Self::Error>;
+    
 }
 
 /// Trait for deriving a key pair from a seed, the seed is not necessarily the same size as the private key, but it should be of a fixed size
 /// <S> is a type of the resultant secret key
-pub trait GenerateDeterministic2<SK> {
-    /// The size of the seed used to derive the key pair, this is not necessarily the same as the size of the private key, but it should be of a fixed size
-    type SeedSize: ArraySize;
-    /// The type of the public key
-    //type PublicKey;
-    //type Private;
-    /// Error type for key derivation
-    type Error;
-    /// Derive a key pair from a seed, the seed is not necessarily the same size as the private key, but it should be of a fixed size
-    //fn generate_deterministic2( seed: &[u8]) -> Result<(SK, Self::PublicKey), Self::Error>;
+// pub trait GenerateDeterministic2<SK> {
+//     /// The size of the seed used to derive the key pair, this is not necessarily the same as the size of the private key, but it should be of a fixed size
+//     type SeedSize: ArraySize;
+//     /// Error type for key derivation
+//     type Error;
+//     /// Derive a key pair from a seed, the seed is not necessarily the same size as the private key, but it should be of a fixed size
+//     fn generate_deterministic2( seed: &[u8]) -> Result<SK, Self::Error>;
+// }
 
-    fn generate_deterministic2( seed: &[u8]) -> Result<SK, Self::Error>;
-}
+// pub trait GenerateDeterministic4 {
+//     type SeedSize: ArraySize;
+//     type Error;
+//     fn generate_deterministic(seed: &Array::<u8, Self::SeedSize>) -> Result<Self, Self::Error> where Self: Sized;
 
-pub trait GenerateDeterministic4 {
-    type SeedSize: ArraySize;
-    type Error;
-    fn generate_deterministic(seed: &Array::<u8, Self::SeedSize>) -> Result<Self, Self::Error> where Self: Sized;
-
-}
+// }
 
 
 /// Seed, a fixed size type used to generate the private key
@@ -496,34 +444,20 @@ pub trait GenerateDeterministic4 {
 
 /// Implementation of some of the Key Encapsulation Mechanisms described in NIST SP 800-56A - DH and ECDH based
 pub mod nistsp800_56a {
-    use crate::*;
+    use crate::{eckem::EcMqvAuthKemUncompressed, *};
     /// NIST describes key agreement using ECC in SP800-56A, this is option 1 from the document
     //pub type EcCombinerConcat<H> = super::eckem::EcCombinerNoPubKeys<ConcatKdf<H>>; 
     // NIST SP800-56A includes two key derivation methods for using the shared secret, this is option 2 which uses 
     // ASN.1 DER encoding of Algorithm ID, PartyUInfo, PartyVInfo and optionally SuppPubInfo and/or SuppPrivInfo
     
-    /// Type for party U as described in NIST SP 800-56A, 6.2.2.2 (Cofactor) One-Pass Diffie-Hellman Scheme
-    //pub type EccOnePassDhEncapsulator<C,K,L> = super::eckem::EcdhEncapsulatorUncompressed<C,K,L>;
-    pub type EccOnePassDhCapsulator<C,K,L> = KemAuthWithKdf<EcdhKemUncompressed<C, SeedAsScalar>, CombinerNoKeys, K, L>;
-    
-    /// Type for party V as described in NIST SP 800-56A, 6.2.2.2 (Cofactor) One-Pass Diffie-Hellman Scheme
-    //pub type EccOnePassDhDecapsulator<C,K,L> = super::eckem::EcdhDecapsulator<C,K,L,EcUncompressedEncoder<C>>;
+    /// As described in NIST SP 800-56A, 6.2.2.2 (Cofactor) One-Pass Diffie-Hellman Scheme
+    pub type EccOnePassDhCapsulator<C,K,L> = KemAuthWithKdf<EcdhKemUncompressed<C>, CombinerNoKeys, K, L>;
+        
+    /// As described in NIST SP 800-56A, 6.2.1.2 (Cofactor) One-Pass Unified Model Scheme
+    pub type EccOnePassUnifiedKem<C,K,L> = KemAuthWithKdf<EcdhAuthKemUncompressed<C>, CombinerNoKeys, K, L>;
 
-    /// Type for party U as described in NIST SP 800-56A, 6.2.1.2 (Cofactor) One-Pass Unified Model Scheme
-    //pub type EccOnePassUnifiedEncapsulator<C,K,L> = super::eckem::EcdhAuthEncapsulatorCompressed<C,K,L>;
-    pub type EccOnePassUnifiedEncapsulator<C,K,L> = KemAuthWithKdf<EcdhAuthEncapsulatorCompressed<C, SeedAsScalar>, CombinerNoKeys, K, L>;
-    /// Type for party V as described in NIST SP 800-56A, 6.2.1.2 (Cofactor) One-Pass Unified Model Scheme
-    //pub type EccOnePassUnifiedDecapsulator<C,K,L> = super::eckem::EcdhAuthDecapsulator<C,K,L,EcUncompressedEncoder<C>>;
-    pub type EccOnePassUnifiedDecapsulator<C,K,L> = KemAuthWithKdf<EcdhAuthDecapsulator<C,EcUncompressedEncoder<C>>, CombinerNoKeys, K,L>;
-
-    pub type EccOnePassUnifiedCapsulator<C,K,L> = KemAuthWithKdf<EcdhAuthCapsulatorUncompressed<C, SeedAsScalar>, CombinerNoKeys, K, L>;
-
-    /// Type for party U as described in NIST SP 800-56A, 6.2.1.4 One-Pass MQV, C(1e, 2s, ECC MQV) Scheme
-    //pub type EccOnePassMqvEncapsulator<C,K,L> = super::eckem::EcMqvAuthEncapsulatorUncompressed<C,K,L>;
-    pub type EccOnePassMqvEncapsulator<C,K,L> = KemAuthWithKdf<EcMqvAuthEncapsulatorUncompressed<C>, CombinerNoKeys, K,L>;
-    /// Type for party V as described in NIST SP 800-56A, 6.2.1.4 One-Pass MQV, C(1e, 2s, ECC MQV) Scheme
-    //pub type EccOnePassMqvDecapsulator<C,K,L> = super::eckem::EcMqvAuthDecapsulator<C,K,L,EcUncompressedEncoder<C>>;
-    pub type EccOnePassMqvDecapsulator<C,K,L> = KemAuthWithKdf<EcMqvAuthDecapsulator<C,EcUncompressedEncoder<C>>, CombinerNoKeys,K,L>;
+    /// As described in NIST SP 800-56A, 6.2.1.4 One-Pass MQV, C(1e, 2s, ECC MQV) Scheme
+    pub type EccOnePassMqvKem<C,K,L> = KemAuthWithKdf<EcMqvAuthKemUncompressed<C>, CombinerNoKeys, K,L>;   
 }
 
 /// Implementation of some of the Key Encapsulation Mechanisms described in NIST SP 800-56B - RSA based
@@ -546,22 +480,17 @@ pub mod ansi_x9_63 {
 
     /// Type representing the 1-Pass Diffie Helmann Scheme using the NIST SP 800-56 Concat Kdf, as described in ANSI X9.63, 6.2.1 
     /// Shared Data, if used, is passed as the other-info field in the creation of the Kdf object
-    pub type EccOnePassDhConcatKdfKem<C,H,L> = KemWithKdf<super::eckem::EcdhKemUncompressed<C,SeedAsScalar>, CombinerNoKeys, ConcatKdf<H>, L>;
+    pub type EccOnePassDhConcatKdfKem<C,H,L> = KemWithKdf<super::eckem::EcdhKemUncompressed<C>, CombinerNoKeys, ConcatKdf<H>, L>;
     /// Type representing the 1-Pass Diffie Helmann Scheme using the Kdf defined in X9.63 as described in ANSI X9.63, 6.2.1
-    //pub type EccOnePassDhX963KdfKem<C,H,L> = super::eckem::EcdhKemUncompressed<C,EcCombinerX963<H>,L,SeedAsScalar>;
-    pub type EccOnePassDhX963KdfKem<C,H,L> = KemWithKdf<super::eckem::EcdhKemUncompressed<C,SeedAsScalar>, CombinerNoKeys, X963Kdf<H>, L>;
+    pub type EccOnePassDhX963KdfKem<C,H,L> = KemWithKdf<super::eckem::EcdhKemUncompressed<C>, CombinerNoKeys, X963Kdf<H>, L>;
     /// Type representing the 1-Pass Unified Model Scheme using the Concat KDF from X9.63, 6.5.1 
-    //pub type EccOnePassUnifiedConcatKdfKem<C,H,L> = super::eckem::EcdhAuthCapsulatorCompressed<C,EcCombinerConcat<H>,L>;
-    pub type EccOnePassUnifiedConcatKdfKem<C,H,L> = KemAuthWithKdf<super::eckem::EcdhAuthCapsulatorCompressed<C, SeedAsScalar>, CombinerNoKeys, ConcatKdf<H>,L>;
+    pub type EccOnePassUnifiedConcatKdfKem<C,H,L> = KemAuthWithKdf<super::eckem::EcdhAuthKemCompressed<C>, CombinerNoKeys, ConcatKdf<H>,L>;
     /// Type representing the 1-Pass Unified Model Scheme using the X9.63 KDF from X9.63, 6.5.1 
-    //pub type EccOnePassUnifiedX963KdfKem<C,H,L> = super::eckem::EcdhAuthCapsulatorCompressed<C,EcCombinerX963<H>,L>;
-    pub type EccOnePassUnifiedX963KdfKem<C,H,L> = KemAuthWithKdf<super::eckem::EcdhAuthCapsulatorCompressed<C, SeedAsScalar>, CombinerNoKeys, X963Kdf<H>, L>;
+    pub type EccOnePassUnifiedX963KdfKem<C,H,L> = KemAuthWithKdf<super::eckem::EcdhAuthKemCompressed<C>, CombinerNoKeys, X963Kdf<H>, L>;
     /// Type representing the 1-Pass MQV Scheme using the Concat KDF from X9.63, 6.9.1
-    //pub type EccOnePassMqvConcatKdfKem<C,H,L> = super::eckem::EcMqvAuthCapsulatorUncompressed<C,EcCombinerConcat<H>,L>;
-    pub type EccOnePassMqvConcatKdfKem<C,H,L> = KemAuthWithKdf<super::eckem::EcMqvAuthCapsulatorUncompressed<C>, CombinerNoKeys, kdfs::nistsp800_56::ConcatKdf<H>,L>;
+    pub type EccOnePassMqvConcatKdfKem<C,H,L> = KemAuthWithKdf<super::eckem::EcMqvAuthKemUncompressed<C>, CombinerNoKeys, kdfs::nistsp800_56::ConcatKdf<H>,L>;
     /// Type representing the 1-Pass MQV Scheme using the X9.63 KDF from X9.63, 6.9.1 
-    //pub type EccOnePassMqvX963KdfKem<C,H,L> = super::eckem::EcMqvAuthCapsulatorUncompressed<C,EcCombinerX963<H>,L>;
-    pub type EccOnePassMqvX963KdfKem<C,H,L> = KemAuthWithKdf<super::eckem::EcMqvAuthCapsulatorUncompressed<C>, CombinerNoKeys, kdfs::ansi_x9_63::X963Kdf<H>,L>;
+    pub type EccOnePassMqvX963KdfKem<C,H,L> = KemAuthWithKdf<super::eckem::EcMqvAuthKemUncompressed<C>, CombinerNoKeys, kdfs::ansi_x9_63::X963Kdf<H>,L>;
     
 }
 
@@ -580,23 +509,23 @@ pub mod iso18033_2 {
     
     /// Implementation of the ECIES-KEM function as described in ISO 18033-2, 10.2.3. 
     /// This type uses compressed encoding, which is the same as SEC1 compressed encoding
-    pub type EciesKemCompressed<C,K,L> = KemWithKdf<EcdhKemCompressed<C, SeedAsScalar>, CombinerEphemOnly, K, L>;
+    pub type EciesKemCompressed<C,K,L> = KemWithKdf<EcdhKemCompressed<C>, CombinerCiphertext, K, L>;
     
     /// Implementation of the ECIES-KEM function as described in ISO 18033-2, 10.2.3. using Kdf1
-    pub type EciesKemCompressedKdf1<C,H,L> = KemWithKdf::<EcdhKemCompressed::<C, SeedAsScalar>, CombinerEphemOnly, Kdf1<H>, L>;
+    pub type EciesKemCompressedKdf1<C,H,L> = KemWithKdf::<EcdhKemCompressed::<C>, CombinerCiphertext, Kdf1<H>, L>;
     
     /// Implementation of the ECIES-KEM function as described in ISO 18033-2, 10.2.3. using Kdf2
-    pub type EciesKemCompressedKdf2<C,H,L> = KemWithKdf::<EcdhKemCompressed::<C, SeedAsScalar>, CombinerEphemOnly, Kdf2<H>, L>;
+    pub type EciesKemCompressedKdf2<C,H,L> = KemWithKdf::<EcdhKemCompressed::<C>, CombinerCiphertext, Kdf2<H>, L>;
 
     /// Implementation of the ECIES-KEM function as described in ISO 18033-2, 10.2.3. 
     /// This type uses uncompressed encoding, which is the same as SEC1 uncompressed encoding
-    pub type EciesKemUncompressed<C,K,L> = KemWithKdf::<EcdhKemUncompressed<C, SeedAsScalar>, CombinerNoKeys, K, L>;
+    pub type EciesKemUncompressed<C,K,L> = KemWithKdf::<EcdhKemUncompressed<C>, CombinerNoKeys, K, L>;
     
-    /// Implementation of the ECIES-KEM function as described in ISO 18033-2, 10.2.3. using Kdf1 and uncompressed encoding
-    pub type EciesKemUncompressedKdf1<C,H,L> = KemWithKdf::<EcdhKemUncompressed::<C, SeedAsScalar>, CombinerEphemOnly, Kdf1<H>, L>;
+    /// Implementation of the ECIES-KEM function as described in ISO 18033-2, 10.2.3. using Kdf1 and raw encoding
+    pub type EciesKemUncompressedKdf1<C,H,L> = KemWithKdf::<EcdhKemUncompressed::<C>, CombinerCiphertext, Kdf1<H>, L>;
 
     /// Implementation of the ECIES-KEM function as described in ISO 18033-2, 10.2.3. using Kdf2 and uncompressed encoding
-    pub type EciesKemUncompressedKdf2<C,H,L> = KemWithKdf::<EcdhKemUncompressed::<C, SeedAsScalar>, CombinerEphemOnly, Kdf2<H>, L>;
+    pub type EciesKemUncompressedKdf2<C,H,L> = KemWithKdf::<EcdhKemUncompressed::<C>, CombinerCiphertext, Kdf2<H>, L>;
     
     /// Implementation of the RSA-KEM.Encryption and Decryption function as described in ISO 18033-2, 11.5.3. & 4.
     /// LE is the modulus length, LK is the output key length and K is the key derivation function
@@ -617,176 +546,198 @@ pub mod iso18033_2 {
     pub type Rem1Kem<LE,LK,D,F> = RsaOaepKem<LE,LK,D,F>;
 }
 
+
+
+
 /// Types and OIDs from RFC 5753: Use of Elliptic Curve Cryptography (ECC) Algorithms in Cryptographic Message Syntax (CMS)
 pub mod rfc5753 {
-    use crate::*;    
+    #[allow(unused)]
+    use crate::eckem::EcMqvAuthKemCompressed;
+    #[allow(unused)]
+    use crate::*;
+
     /// All these have OIDs from RFC5753
     #[cfg(feature="rustcrypto-sha1")]
-    pub type DhSinglePassStdDhSha1KdfScheme<C,L>   = KemWithKdf::<super::eckem::EcdhKemUncompressed<C, SeedAsScalar>, CombinerNoKeys, X963Kdf<Sha1>,L>;
+    pub type DhSinglePassStdDhSha1KdfScheme<C,L>   = KemWithKdf::<EcdhKemUncompressed<C>, CombinerNoKeys, X963Kdf<Sha1>,L>;
     #[cfg(feature="rustcrypto-sha2")]
-    pub type DhSinglePassStdDhSha224KdfScheme<C,L> = KemWithKdf::<super::eckem::EcdhKemUncompressed<C, SeedAsScalar>, CombinerNoKeys, X963Kdf<Sha224>,L>;
+    pub type DhSinglePassStdDhSha224KdfScheme<C,L> = KemWithKdf::<EcdhKemUncompressed<C>, CombinerNoKeys, X963Kdf<Sha224>,L>;
     #[cfg(feature="rustcrypto-sha2")]
-    pub type DhSinglePassStdDhSha256KdfScheme<C,L> = KemWithKdf::<super::eckem::EcdhKemUncompressed<C, SeedAsScalar>, CombinerNoKeys, X963Kdf<Sha256>,L>;
+    pub type DhSinglePassStdDhSha256KdfScheme<C,L> = KemWithKdf::<EcdhKemUncompressed<C>, CombinerNoKeys, X963Kdf<Sha256>,L>;
     #[cfg(feature="rustcrypto-sha2")]
-    pub type DhSinglePassStdDhSha384KdfScheme<C,L> = KemWithKdf::<super::eckem::EcdhKemUncompressed<C, SeedAsScalar>, CombinerNoKeys, X963Kdf<Sha384>,L>;
+    pub type DhSinglePassStdDhSha384KdfScheme<C,L> = KemWithKdf::<EcdhKemUncompressed<C>, CombinerNoKeys, X963Kdf<Sha384>,L>;
     #[cfg(feature="rustcrypto-sha2")]
-    pub type DhSinglePassStdDhSha512KdfScheme<C,L> = KemWithKdf::<super::eckem::EcdhKemUncompressed<C, SeedAsScalar>, CombinerNoKeys, X963Kdf<Sha512>,L>;
+    pub type DhSinglePassStdDhSha512KdfScheme<C,L> = KemWithKdf::<EcdhKemUncompressed<C>, CombinerNoKeys, X963Kdf<Sha512>,L>;
+
     // The Cofactor types have a different OID, but the same generics, use compressed as a hack to seperate
     #[cfg(feature="rustcrypto-sha1")]
-    pub type DhSinglePassCofactorDhSha1KdfScheme<C,L> = KemWithKdf::<super::eckem::EcdhKemCompressed<C, SeedAsScalar>, CombinerNoKeys, X963Kdf<Sha1>,L>;
+    pub type DhSinglePassCofactorDhSha1KdfScheme<C,L> = KemWithKdf::<EcdhKemCompressed<C>, CombinerNoKeys, X963Kdf<Sha1>,L>;
     #[cfg(feature="rustcrypto-sha2")]
-    pub type DhSinglePassCofactorDhSha224KdfScheme<C,L> = KemWithKdf::<super::eckem::EcdhKemCompressed<C, SeedAsScalar>, CombinerNoKeys, X963Kdf<Sha224>,L>;
+    pub type DhSinglePassCofactorDhSha224KdfScheme<C,L> = KemWithKdf::<EcdhKemCompressed<C>, CombinerNoKeys, X963Kdf<Sha224>,L>;
     #[cfg(feature="rustcrypto-sha2")]
-    pub type DhSinglePassCofactorDhSha256KdfScheme<C,L> = KemWithKdf::<super::eckem::EcdhKemCompressed<C, SeedAsScalar>, CombinerNoKeys, X963Kdf<Sha256>,L>;
+    pub type DhSinglePassCofactorDhSha256KdfScheme<C,L> = KemWithKdf::<EcdhKemCompressed<C>, CombinerNoKeys, X963Kdf<Sha256>,L>;
     #[cfg(feature="rustcrypto-sha2")]
-    pub type DhSinglePassCofactorDhSha384KdfScheme<C,L> = KemWithKdf::<super::eckem::EcdhKemCompressed<C, SeedAsScalar>, CombinerNoKeys, X963Kdf<Sha384>,L>;
+    pub type DhSinglePassCofactorDhSha384KdfScheme<C,L> = KemWithKdf::<EcdhKemCompressed<C>, CombinerNoKeys, X963Kdf<Sha384>,L>;
     #[cfg(feature="rustcrypto-sha2")]
-    pub type DhSinglePassCofactorDhSha512KdfScheme<C,L> = KemWithKdf::<super::eckem::EcdhKemCompressed<C, SeedAsScalar>, CombinerNoKeys, X963Kdf<Sha512>,L>;
+    pub type DhSinglePassCofactorDhSha512KdfScheme<C,L> = KemWithKdf::<EcdhKemCompressed<C>, CombinerNoKeys, X963Kdf<Sha512>,L>;
 
     #[cfg(feature="rustcrypto-sha1")]
-    //pub type MqvSinglePassSha1KdfScheme<C,L> = super::eckem::EcMqvAuthCapsulatorCompressed<C, EcCombinerX963<Sha1>,L>;
-    pub type MqvSinglePassSha1KdfScheme<C,L> = KemAuthWithKdf<super::eckem::EcMqvAuthCapsulatorCompressed<C>, CombinerNoKeys, kdfs::ansi_x9_63::X963Kdf<Sha1>, L>;
+    pub type MqvSinglePassSha1KdfScheme<C,L> = KemAuthWithKdf<EcMqvAuthKemCompressed<C>, CombinerNoKeys, kdfs::ansi_x9_63::X963Kdf<Sha1>, L>;
     #[cfg(feature="rustcrypto-sha2")]
-    //pub type MqvSinglePassSha224KdfScheme<C,L> = super::eckem::EcMqvAuthCapsulatorCompressed<C, EcCombinerX963<Sha224>,L>;
-    pub type MqvSinglePassSha224KdfScheme<C,L> = KemAuthWithKdf<super::eckem::EcMqvAuthCapsulatorCompressed<C>, CombinerNoKeys, kdfs::ansi_x9_63::X963Kdf<Sha224>, L>;
+    pub type MqvSinglePassSha224KdfScheme<C,L> = KemAuthWithKdf<EcMqvAuthKemCompressed<C>, CombinerNoKeys, kdfs::ansi_x9_63::X963Kdf<Sha224>, L>;
     #[cfg(feature="rustcrypto-sha2")]
-    //pub type MqvSinglePassSha256KdfScheme<C,L> = super::eckem::EcMqvAuthCapsulatorCompressed<C, EcCombinerX963<Sha256>,L>;
-    pub type MqvSinglePassSha256KdfScheme<C,L> = KemAuthWithKdf<super::eckem::EcMqvAuthCapsulatorCompressed<C>, CombinerNoKeys, kdfs::ansi_x9_63::X963Kdf<Sha256>, L>;
+    pub type MqvSinglePassSha256KdfScheme<C,L> = KemAuthWithKdf<EcMqvAuthKemCompressed<C>, CombinerNoKeys, kdfs::ansi_x9_63::X963Kdf<Sha256>, L>;
     #[cfg(feature="rustcrypto-sha2")]
-    //pub type MqvSinglePassSha384KdfScheme<C,L> = super::eckem::EcMqvAuthCapsulatorCompressed<C, EcCombinerX963<Sha384>,L>;
-    pub type MqvSinglePassSha384KdfScheme<C,L> = KemAuthWithKdf<super::eckem::EcMqvAuthCapsulatorCompressed<C>, CombinerNoKeys, kdfs::ansi_x9_63::X963Kdf<Sha384>, L>;
+    pub type MqvSinglePassSha384KdfScheme<C,L> = KemAuthWithKdf<EcMqvAuthKemCompressed<C>, CombinerNoKeys, kdfs::ansi_x9_63::X963Kdf<Sha384>, L>;
     #[cfg(feature="rustcrypto-sha2")]
-    //pub type MqvSinglePassSha512KdfScheme<C,L> = super::eckem::EcMqvAuthCapsulatorCompressed<C, EcCombinerX963<Sha512>,L>;
-    pub type MqvSinglePassSha512KdfScheme<C,L> = KemAuthWithKdf<super::eckem::EcMqvAuthCapsulatorCompressed<C>, CombinerNoKeys, kdfs::ansi_x9_63::X963Kdf<Sha512>, L>;
+    pub type MqvSinglePassSha512KdfScheme<C,L> = KemAuthWithKdf<EcMqvAuthKemCompressed<C>, CombinerNoKeys, kdfs::ansi_x9_63::X963Kdf<Sha512>, L>;
 
-    // impl<C: CurveArithmetic+PointCompression, L: ArrayLength<u8>> AssociatedOid for DhSinglePassStdDhSha256KdfScheme<C,L>  where <C as elliptic_curve::Curve>::FieldBytesSize: ModulusSize  {
-    //     const OID: ObjectIdentifier = ObjectIdentifier::new_unwrap("1.3.132.1.11.1");
-    // }
     
     #[cfg(feature="rustcrypto-sha1")]
-    //impl<C: CurveArithmetic+PointCompression, L: ArrayLength<u8>> AssociatedOid for DhSinglePassStdDhSha1KdfScheme<C,L>
-    impl<C: CurveArithmetic+PointCompression, L: ArrayLength> AssociatedOid for DhSinglePassStdDhSha1KdfScheme<C,L>
+    impl<C: CurveArithmetic+PointCompression, L: ArraySize> AssociatedOid for DhSinglePassStdDhSha1KdfScheme<C,L>
     {   //OBJECT IDENTIFIER ::= {x9-63-scheme 2 }
         const OID: ObjectIdentifier = ObjectIdentifier::new_unwrap("1.3.133.16.840.63.0.2");
     }
     #[cfg(feature="rustcrypto-sha2")]
-    //impl<C: CurveArithmetic+PointCompression, L: ArrayLength<u8>> AssociatedOid for DhSinglePassStdDhSha224KdfScheme<C,L> 
-    impl<C: CurveArithmetic+PointCompression, L: ArrayLength> AssociatedOid for DhSinglePassStdDhSha224KdfScheme<C,L> 
+    impl<C: CurveArithmetic+PointCompression, L: ArraySize> AssociatedOid for DhSinglePassStdDhSha224KdfScheme<C,L> 
     {   //OBJECT IDENTIFIER ::= {secg-scheme 11 0 }
         const OID: ObjectIdentifier = ObjectIdentifier::new_unwrap("1.3.132.1.11.0");
     }
     #[cfg(feature="rustcrypto-sha2")]
-    //impl<C: CurveArithmetic+PointCompression, L: ArrayLength<u8>> AssociatedOid for DhSinglePassStdDhSha256KdfScheme<C,L> 
-    impl<C: CurveArithmetic+PointCompression, L: ArrayLength> AssociatedOid for DhSinglePassStdDhSha256KdfScheme<C,L> 
+    impl<C: CurveArithmetic+PointCompression, L: ArraySize> AssociatedOid for DhSinglePassStdDhSha256KdfScheme<C,L> 
     {   //OBJECT IDENTIFIER ::= {secg-scheme 11 1 }
         const OID: ObjectIdentifier = ObjectIdentifier::new_unwrap("1.3.132.1.11.1");
     }
     #[cfg(feature="rustcrypto-sha2")]
-    impl<C: CurveArithmetic+PointCompression, L: ArrayLength> AssociatedOid for DhSinglePassStdDhSha384KdfScheme<C,L> 
+    impl<C: CurveArithmetic+PointCompression, L: ArraySize> AssociatedOid for DhSinglePassStdDhSha384KdfScheme<C,L> 
     {   //OBJECT IDENTIFIER ::= {secg-scheme 11 2 }
         const OID: ObjectIdentifier = ObjectIdentifier::new_unwrap("1.3.132.1.11.2");
     }
     #[cfg(feature="rustcrypto-sha2")]
-    impl<C: CurveArithmetic+PointCompression, L: ArrayLength> AssociatedOid for DhSinglePassStdDhSha512KdfScheme<C,L> 
+    impl<C: CurveArithmetic+PointCompression, L: ArraySize> AssociatedOid for DhSinglePassStdDhSha512KdfScheme<C,L> 
     {   //OBJECT IDENTIFIER ::= {secg-scheme 11 3 }
         const OID: ObjectIdentifier = ObjectIdentifier::new_unwrap("1.3.132.1.11.3");
     }
     #[cfg(feature="rustcrypto-sha1")]
-    impl<C: CurveArithmetic+PointCompression, L: ArrayLength> AssociatedOid for DhSinglePassCofactorDhSha1KdfScheme<C,L> 
+    impl<C: CurveArithmetic+PointCompression, L: ArraySize> AssociatedOid for DhSinglePassCofactorDhSha1KdfScheme<C,L> 
     {   //OBJECT IDENTIFIER ::= {x9-63-scheme 3 }
         const OID: ObjectIdentifier = ObjectIdentifier::new_unwrap("1.3.133.16.840.63.0.3");
     }
     #[cfg(feature="rustcrypto-sha2")]
-    impl<C: CurveArithmetic+PointCompression, L: ArrayLength> AssociatedOid for DhSinglePassCofactorDhSha224KdfScheme<C,L> 
+    impl<C: CurveArithmetic+PointCompression, L: ArraySize> AssociatedOid for DhSinglePassCofactorDhSha224KdfScheme<C,L> 
     {   //OBJECT IDENTIFIER ::= {secg-scheme 14 0 }
         const OID: ObjectIdentifier = ObjectIdentifier::new_unwrap("1.3.132.1.14.0");
     }
     #[cfg(feature="rustcrypto-sha2")]
-    impl<C: CurveArithmetic+PointCompression, L: ArrayLength> AssociatedOid for DhSinglePassCofactorDhSha256KdfScheme<C,L> 
+    impl<C: CurveArithmetic+PointCompression, L: ArraySize> AssociatedOid for DhSinglePassCofactorDhSha256KdfScheme<C,L> 
     {   //OBJECT IDENTIFIER ::= {secg-scheme 14 1 }
         const OID: ObjectIdentifier = ObjectIdentifier::new_unwrap("1.3.132.1.14.1");
     }
     #[cfg(feature="rustcrypto-sha2")]
-    impl<C: CurveArithmetic+PointCompression, L: ArrayLength> AssociatedOid for DhSinglePassCofactorDhSha384KdfScheme<C,L>
+    impl<C: CurveArithmetic+PointCompression, L: ArraySize> AssociatedOid for DhSinglePassCofactorDhSha384KdfScheme<C,L>
     {   //OBJECT IDENTIFIER ::= {secg-scheme 14 2 }
         const OID: ObjectIdentifier = ObjectIdentifier::new_unwrap("1.3.132.1.14.2");
     }
     #[cfg(feature="rustcrypto-sha2")]
-    impl<C: CurveArithmetic+PointCompression, L: ArrayLength> AssociatedOid for DhSinglePassCofactorDhSha512KdfScheme<C,L>
+    impl<C: CurveArithmetic+PointCompression, L: ArraySize> AssociatedOid for DhSinglePassCofactorDhSha512KdfScheme<C,L>
     {   //OBJECT IDENTIFIER ::= {secg-scheme 14 3 }
         const OID: ObjectIdentifier = ObjectIdentifier::new_unwrap("1.3.132.1.14.3");
     }
     #[cfg(feature="rustcrypto-sha1")]
-    impl<C: CurveArithmetic+PointCompression, L: ArrayLength> AssociatedOid for MqvSinglePassSha1KdfScheme<C,L> 
+    impl<C: CurveArithmetic+PointCompression, L: ArraySize> AssociatedOid for MqvSinglePassSha1KdfScheme<C,L> 
     {   //OBJECT IDENTIFIER ::= {x9-63-scheme 16 }
         const OID: ObjectIdentifier = ObjectIdentifier::new_unwrap("1.3.133.16.840.63.0.16");
     }
     #[cfg(feature="rustcrypto-sha2")]
-    impl<C: CurveArithmetic+PointCompression, L: ArrayLength> AssociatedOid for MqvSinglePassSha224KdfScheme<C,L>
+    impl<C: CurveArithmetic+PointCompression, L: ArraySize> AssociatedOid for MqvSinglePassSha224KdfScheme<C,L>
     {   //OBJECT IDENTIFIER ::= {secg-scheme 15 0 }
         const OID: ObjectIdentifier = ObjectIdentifier::new_unwrap("1.3.132.1.15.0");
     }
     #[cfg(feature="rustcrypto-sha2")]
-    impl<C: CurveArithmetic+PointCompression, L: ArrayLength> AssociatedOid for MqvSinglePassSha256KdfScheme<C,L>
+    impl<C: CurveArithmetic+PointCompression, L: ArraySize> AssociatedOid for MqvSinglePassSha256KdfScheme<C,L>
     {   //OBJECT IDENTIFIER ::= {secg-scheme 15 1 }
         const OID: ObjectIdentifier = ObjectIdentifier::new_unwrap("1.3.132.1.15.1");
     }
     #[cfg(feature="rustcrypto-sha2")]
-    impl<C: CurveArithmetic+PointCompression, L: ArrayLength> AssociatedOid for MqvSinglePassSha384KdfScheme<C,L>
+    impl<C: CurveArithmetic+PointCompression, L: ArraySize> AssociatedOid for MqvSinglePassSha384KdfScheme<C,L>
     {   //OBJECT IDENTIFIER ::= {secg-scheme 15 2 }
         const OID: ObjectIdentifier = ObjectIdentifier::new_unwrap("1.3.132.1.15.2");
     }
-    #[cfg(feature="rustcrypto-sha2")]impl<C: CurveArithmetic+PointCompression, L: ArrayLength> AssociatedOid for MqvSinglePassSha512KdfScheme<C,L> 
+    #[cfg(feature="rustcrypto-sha2")]
+    impl<C: CurveArithmetic+PointCompression, L: ArraySize> AssociatedOid for MqvSinglePassSha512KdfScheme<C,L> 
     {   // OBJECT IDENTIFIER ::= {secg-scheme 15 3 }
         const OID: ObjectIdentifier = ObjectIdentifier::new_unwrap("1.3.132.1.15.3");
     }
-
-
-    //   AsymmKeyWrapUsingEncapsulatorAndAesKw::<EcEncapKey::<NistP256,U24,U65>,rfc5753::DhSinglePassStdDhSha256KdfSchemeDecapsulator::<NistP256,U24>,Aes192>::new(decap2); 
-    //pub type DhSinglePassStdDhSha256KdfAes192Kw<C> = AsymmKeyWrapUsingEncapsulatorAndAesKw<EcEncapKey<C,U24,EcUncompressedEncoder<C>>,DhSinglePassStdDhSha256KdfSchemeCapsulator<C,U24>,Aes192>;
-    
-    
 }
+
+
+#[cfg(all(feature="rustcrypto-ml-kem", feature="rustcrypto-sha3"))]
+pub mod fips204 {
+    
+    use kem::{Ciphertext, SharedKey};
+    use kem::consts::{U16, U32};
+    use ml_kem::{MlKem512, MlKem768, MlKem1024};
+    use crate::EncapsulateDeterministic;
+    use crate::kem_with_kdf::{CombinerNoKeys, KemWithKdf};
+
+    impl EncapsulateDeterministic for ml_kem::EncapsulationKey<MlKem512> //ml_kem::MlKem768 as Kem>::DecapsulationKey
+    {
+        type Kem = MlKem512;
+        type SeedSize = U32;
+
+        fn encapsulate_deterministic(&self, seed: &[u8]) -> (Ciphertext<Self::Kem>, SharedKey<Self::Kem>) {
+            let Ok(seed_as_array): Result<ml_kem::B32,_> = seed.try_into() else { panic!("DDDSFDS")};
+            self.encapsulate_deterministic(&seed_as_array)
+        }
+    }
+    impl EncapsulateDeterministic for ml_kem::EncapsulationKey<MlKem768> //ml_kem::MlKem768 as Kem>::DecapsulationKey
+    {
+        type Kem = ml_kem::MlKem768;
+        type SeedSize = U32;
+
+        fn encapsulate_deterministic(&self, seed: &[u8]) -> (Ciphertext<Self::Kem>, SharedKey<Self::Kem>) {
+            let Ok(seed_as_array): Result<ml_kem::B32,_> = seed.try_into() else { panic!("DDDSFDS")};
+            self.encapsulate_deterministic(&seed_as_array)
+        }
+    }
+    impl EncapsulateDeterministic for ml_kem::EncapsulationKey<MlKem1024> //ml_kem::MlKem768 as Kem>::DecapsulationKey
+    {
+        type Kem = ml_kem::MlKem1024;
+        type SeedSize = U32;
+
+        fn encapsulate_deterministic(&self, seed: &[u8]) -> (Ciphertext<Self::Kem>, SharedKey<Self::Kem>) {
+            let Ok(seed_as_array): Result<ml_kem::B32,_> = seed.try_into() else { panic!("DDDSFDS")};
+            self.encapsulate_deterministic(&seed_as_array)
+        }
+    }
+
+    ///
+    /// Type representing ML-KEM with a separate key derivation applied to the output
+    /// 
+    #[cfg(all(feature="rustcrypto-ml-kem", feature="rustcrypto-sha3"))]
+    pub type MlKem768WithX963KdfU16 = KemWithKdf<MlKem768, CombinerNoKeys, kdfs::ansi_x9_63::X963Kdf<sha3::Sha3_256>, U16>;
+
+}
+
 
 /// Key Encasulation Mechanisms from draft RFC which uses ML-KEM but adds an additional key derivation step
 #[cfg(all(feature="rustcrypto-ml-kem", feature="rustcrypto-sha3"))]
 pub mod draft_ietf_lamps_cms_kyber {
+    use ::ml_kem::MlKem512;
     use crate::*;
 
     #[cfg(all(feature="rustcrypto-sha2", feature ="rustcrypto-hmac"))]
-    pub type MlKem512Hkdf256<L> = KemWithKdf<WrappedMlKem512, CombinerNoKeys, kdfs::rfc5869_hkdf::Hkdf::<sha2::Sha256>, L>;
+    pub type MlKem512Hkdf256<L> = KemWithKdf<MlKem512, CombinerNoKeys, kdfs::rfc5869_hkdf::Hkdf::<sha2::Sha256>, L>;
 
-    
     // impl<L: cipher::ArrayLength<u8>> rsa::pkcs8::AssociatedOid for MlKem512Hkdf256<L> {
     //     const OID: rsa::pkcs8::ObjectIdentifier = rsa::pkcs8::ObjectIdentifier::new_unwrap("2.16.840.1.101.3.4.4.1");
     // }
 }
 
-#[cfg(feature="rustcrypto-ml-kem")]
-pub mod mlkem {
-    use const_oid::{AssociatedOid, ObjectIdentifier, db::fips203::{ID_ALG_ML_KEM_512, ID_ALG_ML_KEM_768, ID_ALG_ML_KEM_1024}};
-    use ::ml_kem::{MlKem512, MlKem768, MlKem1024};
-    use crate::*;
-
-    pub type WrappedMlKem512 = crate::ml_kem::MlKemWrapper<MlKem512>;
-
-    impl AssociatedOid for WrappedMlKem512 {
-        const OID: ObjectIdentifier = ID_ALG_ML_KEM_512;
-    }
-    pub type WrappedMlKem768 = crate::ml_kem::MlKemWrapper<MlKem768>;
-
-    impl AssociatedOid for WrappedMlKem768 {
-        const OID: ObjectIdentifier = ID_ALG_ML_KEM_768;
-    }
-    pub type WrappedMlKem1024 = crate::ml_kem::MlKemWrapper<MlKem1024>;
-
-    impl AssociatedOid for WrappedMlKem1024 {
-        const OID: ObjectIdentifier = ID_ALG_ML_KEM_1024;
-    }
-}
 
 /// Kem combining ML-KEM and a traditional KEM as per draft RFC
 pub mod draft_irtf_cfrg_hybrid_kems {
+    #[cfg(all(feature="rustcrypto-ml-kem", feature="rustcrypto-p256", feature="rustcrypto-sha3"))]
+    use ::ml_kem::MlKem768;
     use crate::*;
     
     
@@ -811,42 +762,29 @@ pub mod draft_irtf_cfrg_hybrid_kems {
         const LABEL: &'static[u8] = b"QSF-KEM(ML-KEM-1024,P-384)-XOF(SHAKE256)-KDF(SHA3-256)";
     }
 
-    #[cfg(all(feature="rustcrypto-ml-kem", feature="rustcrypto-p256", feature="rustcrypto-sha3"))]
-    pub type HybridKemQsfMlKem768P256 = super::hybrid::HybridKem::<
-            WrappedMlKem768,
-            super::eckem::EcdhKem<p256::NistP256, super::eckem::EcCompressedEncoder<p256::NistP256>,crate::eckem::ReduceSeed>, 
-            super::hybrid::QsfCombiner<kdfs::iso11770_6::Okdf3::<sha3::Sha3_256, kdfs::u0>, QsfLabelMlKem768P256>,
-            crate::hybrid::ExpandSeed<super::U32, shake::Shake256>>;
+    // #[cfg(all(feature="rustcrypto-ml-kem", feature="rustcrypto-p256", feature="rustcrypto-sha3"))]
+    // pub type HybridKemQsfMlKem768P256 = super::hybrid::HybridKem::<
+    //         MlKem768, //WrappedMlKem768,
+    //         super::eckem::EcdhKem<p256::NistP256, super::eckem::EcCompressedEncoder<p256::NistP256>,crate::eckem::ReduceSeed>, 
+    //         //super::eckem::EcdhKem<p256::NistP256, super::eckem::EcCompressedEncoder<p256::NistP256>,crate::eckem::SeedAsScalar>, 
+    //         super::hybrid::QsfCombiner<Okdf3::<sha3::Sha3_256, kdfs::u0>, QsfLabelMlKem768P256>,
+    //         crate::hybrid::ExpandSeed<super::U32, shake::Shake256>>;
  
 
     #[cfg(all(feature="rustcrypto-ml-kem", feature="rustcrypto-p256", feature="rustcrypto-sha3", feature="rustcrypto-hmac"))]
     pub type HybridCapsulatorKitchenSinkMlKem768P256 = super::hybrid::HybridKem::<
-            WrappedMlKem768,
+            MlKem768,
             super::eckem::EcdhKem<p256::NistP256, super::eckem::EcCompressedEncoder<p256::NistP256>>, 
             super::hybrid::KitchenSinkCombiner<kdfs::rfc5869_hkdf::Hkdf::<sha2::Sha256>,UniversalCombinerLabelMlKem768P256>,
-            //crate::hybrid::ExpandSeed<typenum::U32, kdfs::cshake::XofKdf<sha3::Shake256>>>;
-            crate::hybrid::ExpandSeed<super::U32, shake::Shake256>>;
+        >;
             
     #[cfg(all(feature="rustcrypto-ml-kem", feature="rustcrypto-x25519", feature="rustcrypto-sha2", feature="rustcrypto-sha3", feature="rustcrypto-hmac"))]
     pub type HybridCapsulatorKitchenSinkMlKem768X25519 = super::hybrid::HybridKem::<
-            //crate::ml_kem::MlKemWithAddKeyDer<ml_kem::MlKem768>,
-            WrappedMlKem768,
-            //crate::x25519kem::X25519Capsulator<crate::eckem::EcCombinerNoPubKeys<kdfs::misc::PassThroughKdf>, cipher::consts::U32, crate::eckem::SeedAsScalar>,
-            crate::x25519kem::X25519Capsulator<crate::eckem::SeedAsScalar>,
+            MlKem768,
+            crate::x25519kem::X25519Kem,
             super::hybrid::KitchenSinkCombiner<kdfs::rfc5869_hkdf::Hkdf::<sha2::Sha256>,UniversalCombinerLabelMlKem768X25519>,
-            //crate::hybrid::ExpandSeed<typenum::U32, kdfs::cshake::XofKdf<sha3::Shake256>>>;
-            crate::hybrid::ExpandSeed<super::U32, shake::Shake256>>;
-
-    #[cfg(all(feature="rustcrypto-p384", feature="rustcrypto-sha3"))]
-    pub type HybridCapsulatorQsfMlKem1024P384 = super::hybrid::HybridKem::<
-            //crate::ml_kem::MlKemWithAddKeyDer<ml_kem::MlKem1024>,
-            WrappedMlKem1024,
-            //super::eckem::EcdhKem<p384::NistP384, crate::eckem::EcCombinerNoPubKeys<kdfs::misc::PassThroughKdf>, cipher::consts::U48, super::eckem::EcCompressedEncoder<p384::NistP384>, crate::eckem::ReduceSeed>, 
-            super::eckem::EcdhKem<p384::NistP384, super::eckem::EcCompressedEncoder<p384::NistP384>, crate::eckem::ReduceSeed>, 
-            super::hybrid::QsfCombiner<kdfs::iso11770_6::Okdf3::<sha3::Sha3_256, kdfs::u0>, QsfLabelMlKem1024P384>,
-            //crate::hybrid::ExpandSeed<typenum::U32, kdfs::cshake::XofKdf<sha3::Shake256>>>;
-            crate::hybrid::ExpandSeed<super::U32, shake::Shake256>>;
-
+        >;
+   
 }
 
 pub mod draft_ietf_hpke_pq
@@ -854,65 +792,29 @@ pub mod draft_ietf_hpke_pq
     #[derive(Debug)]
     pub struct QsfLabelP256MlKem768;
     impl super::Label for QsfLabelP256MlKem768 {
-        //const LABEL: &'static[u8] = b"QSF-P256-MLKEM768-SHAKE256-SHA3256"; 
         const LABEL: &'static[u8] = b"MLKEM768-P256"; // https://datatracker.ietf.org/doc/draft-irtf-cfrg-concrete-hybrid-kems/
-        //const LABEL: &'static[u8] = b""; 
-        // const LABEL: &'static[u8] = b"QSF-KEM(P-256,ML-KEM-768)-XOF(SHAKE256)-KDF(SHA3-256)";
     }
-    #[derive(Debug)]
-    pub struct QsfLabelX25519MlKem768;
-    impl super::Label for QsfLabelX25519MlKem768 {
-        const LABEL: &'static[u8] = b"QSF-X25519-MLKEM768-SHAKE256-SHA3256"; 
-        //const LABEL: &'static[u8] = b""; 
-        // const LABEL: &'static[u8] = b"QSF-KEM(P-256,ML-KEM-768)-XOF(SHAKE256)-KDF(SHA3-256)";
-    }
+    
     #[derive(Debug)]
     pub struct QsfLabelP384MlKem1024;
     impl super::Label for QsfLabelP384MlKem1024 {
-        //const LABEL: &'static[u8] = b"QSF-P384-MLKEM1024-SHAKE256-SHA3256"; 
         const LABEL: &'static[u8] = b"MLKEM1024-P384"; 
-        //const LABEL: &'static[u8] = b""; 
-        // const LABEL: &'static[u8] = b"QSF-KEM(P-256,ML-KEM-768)-XOF(SHAKE256)-KDF(SHA3-256)";
     }
-
-    // #[cfg(all(feature="rustcrypto-p256", feature="rustcrypto-ml-kem", feature="rustcrypto-sha3"))]
-    // pub type HybridKemQsfP256MlKem768 = super::hybrid::HybridKem::<
-    //     super::ml_kem::MlKemWithAddKeyDer<ml_kem::MlKem768, kdfs::misc::PassThroughKdf, typenum::U32>,
-            
-    //         super::eckem::EcdhKem<p256::NistP256, crate::eckem::EcCombinerNoPubKeys<kdfs::misc::PassThroughKdf>, cipher::consts::U32, super::eckem::EcUncompressedEncoder<p256::NistP256>, crate::eckem::SeedAsScalar>, 
-    //         super::hybrid::QsfCombiner2<kdfs::iso11770_6::Okdf3::<sha3::Sha3_256, kdfs::u0>, QsfLabelP256MlKem768>,
-    //         crate::hybrid::ExpandSeed<cipher::consts::U32, kdfs::cshake::XofKdf<sha3::Shake256>>>;
-
-    // #[cfg(all(feature="rustcrypto-ml-kem", feature="rustcrypto-x25519", feature="rustcrypto-sha3"))]
-    // pub type HybridKemQsfX25519MlKem768 = super::hybrid::HybridKem::<
-    //         super::x25519kem::X25519Capsulator<crate::eckem::EcCombinerNoPubKeys<kdfs::misc::PassThroughKdf>, cipher::consts::U32, crate::eckem::SeedAsScalar>, 
-    //         super::ml_kem::MlKemWithAddKeyDer<ml_kem::MlKem768>,
-    //         //super::hybrid::QsfCombiner2<kdfs::iso11770_6::Okdf3::<sha3::Sha3_256, kdfs::u0>, QsfLabelX25519MlKem768>,
-    //         super::hybrid::QsfCombiner2<kdfs::iso11770_6::Okdf3::<sha3::Sha3_256, kdfs::u0>, super::xwing::LabelXWing>,
-    //         crate::hybrid::ExpandSeed<cipher::consts::U64, kdfs::cshake::XofKdf<sha3::Shake256>>>;
-
-    
-    // #[cfg(all(feature="rustcrypto-p384", feature="rustcrypto-ml-kem", feature="rustcrypto-sha3"))]
-    // pub type HybridKemQsfP384MlKem1024 = super::hybrid::HybridKem::<
-    //         super::ml_kem::MlKemWithAddKeyDer<ml_kem::MlKem1024>,
-    //         super::eckem::EcdhKem<p384::NistP384, crate::eckem::EcCombinerNoPubKeys<kdfs::misc::PassThroughKdf>, cipher::consts::U48, super::eckem::EcCompressedEncoder<p384::NistP384>, crate::eckem::SeedAsScalar>, 
-    //         //super::ml_kem::MlKemWithAddKeyDer<ml_kem::MlKem1024>,
-    //         super::hybrid::QsfCombiner2<kdfs::iso11770_6::Okdf3::<sha3::Sha3_256, kdfs::u0>, QsfLabelP384MlKem1024>,
-    //         crate::hybrid::ExpandSeed<cipher::consts::U32, kdfs::cshake::XofKdf<sha3::Shake256>>>;
 }
 
 pub mod apple_hpke {
-    
-use crate::*;
+    #[cfg(all(feature="rustcrypto-ml-kem", feature="rustcrypto-x25519", feature="rustcrypto-sha3"))]
+    use ::ml_kem::MlKem768;
+
+    #[allow(unused)]
+    use crate::*;
     
     #[cfg(all(feature="rustcrypto-ml-kem", feature="rustcrypto-x25519", feature="rustcrypto-sha3"))]
     pub type HybridKemXwing = HybridKem::<
-            //super::x25519kem::X25519Capsulator<crate::eckem::EcCombinerNoPubKeys<kdfs::misc::PassThroughKdf>, cipher::consts::U32, crate::eckem::SeedAsScalar>, 
-            X25519Capsulator<crate::eckem::SeedAsScalar>, 
-            WrappedMlKem768,
-            //super::hybrid::QsfCombiner2<kdfs::iso11770_6::Okdf3::<sha3::Sha3_256, kdfs::u0>, QsfLabelX25519MlKem768>,
+            X25519Kem, 
+            MlKem768,
             QsfCombiner2<Okdf3::<Sha3_256, kdfs::u0>, LabelXWing>,
-            ExpandSeed<cipher::consts::U32, shake::Shake256>>;
+        >;
 }
 /// Composite KEMs as describe in a draft RFC. 
 /// 
@@ -924,6 +826,8 @@ pub mod draft_ietf_lamps_pq_composite_kem_07
     use bp256::BrainpoolP256r1;
     #[cfg(all(feature="rustcrypto-bp384", feature="rustcrypto-sha2"))]
     use bp384::BrainpoolP384r1;
+    #[cfg(all(feature="rustcrypto-ml-kem"))]
+    use ::ml_kem::{MlKem768,MlKem1024};
 
     use crate::*;
 
@@ -960,11 +864,10 @@ pub mod draft_ietf_lamps_pq_composite_kem_07
 
     #[cfg(all(feature="rustcrypto-p256"))]
     pub type HybridKemMlKem768P256Sha3_256 = crate::hybrid::HybridKem::<
-        //::ml_kem::MlKem768, // //M
-        WrappedMlKem768,
-        EcdhKemUncompressed<NistP256, SeedAsScalar>,
+        MlKem768,
+        EcdhKemUncompressed<NistP256>,
         QsfCombiner<Okdf3::<Sha3_256, kdfs::u0>, LabelMlKem768P256Sha3_256>, 
-        ExpandSeed<super::U32, Shake256>>;
+    >;
 
     #[cfg(all(feature="rustcrypto-p256"))]
     impl AssociatedOid for HybridKemMlKem768P256Sha3_256
@@ -980,10 +883,11 @@ pub mod draft_ietf_lamps_pq_composite_kem_07
     } 
 
     #[cfg(all(feature="rustcrypto-p384"))]
-    pub type HybridKemMlKem768P384Sha3_256 = crate::hybrid::HybridKem::<WrappedMlKem768,
-        EcdhKemUncompressed<NistP384, SeedAsScalar>,
+    pub type HybridKemMlKem768P384Sha3_256 = crate::hybrid::HybridKem::<
+        MlKem768,
+        EcdhKemUncompressed<NistP384>,
         QsfCombiner<Okdf3::<Sha3_256, kdfs::u0>,LabelMlKey768EcdhP384Sha3_256>, 
-        ExpandSeed<U32, Shake256>>;
+    >;
 
     #[cfg(all(feature="rustcrypto-p384"))]
     impl AssociatedOid for HybridKemMlKem768P384Sha3_256
@@ -997,10 +901,11 @@ pub mod draft_ietf_lamps_pq_composite_kem_07
     }
 
     #[cfg(all(feature="rustcrypto-p384"))]
-    pub type HybridKemMlKem1024P384Sha3_256 = crate::hybrid::HybridKem::<WrappedMlKem1024,
-        EcdhKemUncompressed<NistP384, SeedAsScalar>,
+    pub type HybridKemMlKem1024P384Sha3_256 = crate::hybrid::HybridKem::<
+        MlKem1024,
+        EcdhKemUncompressed<NistP384>,
         QsfCombiner<Okdf3::<Sha3_256, kdfs::u0>,LabelMlKey1024EcdhP384Sha3_256>, 
-        ExpandSeed<U32, Shake256>>;
+    >;
 
     #[cfg(all(feature="rustcrypto-p384"))]
     impl AssociatedOid for HybridKemMlKem1024P384Sha3_256
@@ -1017,10 +922,11 @@ pub mod draft_ietf_lamps_pq_composite_kem_07
     }   
     
     #[cfg(all(feature="rustcrypto-x448"))]
-    pub type HybridKemMlKem1024X448Sha3_256 = crate::hybrid::HybridKem::<WrappedMlKem1024,
-        X448Capsulator<crate::eckem::SeedAsScalar>,
+    pub type HybridKemMlKem1024X448Sha3_256 = crate::hybrid::HybridKem::<
+        MlKem1024,
+        X448Kem,
         QsfCombiner<Okdf3::<Sha3_256, kdfs::u0>, LabelMlKey1024X448Sha3_256>, 
-        SplitSeed /*typenum::U32*/>;
+    >;
 
     #[cfg(all(feature="rustcrypto-x448"))]
     impl AssociatedOid for HybridKemMlKem1024X448Sha3_256
@@ -1037,9 +943,11 @@ pub mod draft_ietf_lamps_pq_composite_kem_07
     }
 
     #[cfg(all(feature="rustcrypto-p521"))]
-    pub type HybridKemMlKem1024P521Sha3_256 = HybridKem::<WrappedMlKem1024,
-        EcdhKemUncompressed<NistP521, SeedAsScalar>,
-        QsfCombiner<Okdf3::<Sha3_256, kdfs::u0>, LabelMlKey1024EcdhP521Sha3_256>, U32>;
+    pub type HybridKemMlKem1024P521Sha3_256 = HybridKem::<
+        MlKem1024, //WrappedMlKem1024,
+        EcdhKemUncompressed<NistP521>,
+        QsfCombiner<Okdf3::<Sha3_256, kdfs::u0>, LabelMlKey1024EcdhP521Sha3_256>, 
+    >;
 
     #[cfg(all(feature="rustcrypto-p521"))]
     impl AssociatedOid for HybridKemMlKem1024P521Sha3_256
@@ -1056,9 +964,10 @@ pub mod draft_ietf_lamps_pq_composite_kem_07
 
     #[cfg(all(feature="rustcrypto-rsa", feature="rustcrypto-sha2"))]
     pub type HybridKemMlkem768Rsa2048HmacSha256 = HybridKem::<
-        WrappedMlKem768,
+        MlKem768, //WrappedMlKem768,
         RsaOaepKem<U256,U32,Sha256,Sha256>,
-        QsfCombiner<Okdf3<Sha3_256, kdfs::u0>, LabelMlKey768Rsa2048HmacSha256>, U32>;
+        QsfCombiner<Okdf3<Sha3_256, kdfs::u0>, LabelMlKey768Rsa2048HmacSha256>, 
+    >;
     
     #[cfg(all(feature="rustcrypto-rsa", feature="rustcrypto-sha2"))]
     impl AssociatedOid for HybridKemMlkem768Rsa2048HmacSha256
@@ -1074,9 +983,10 @@ pub mod draft_ietf_lamps_pq_composite_kem_07
     }
     #[cfg(all(feature="rustcrypto-ml-kem", feature="rustcrypto-rsa", feature="rustcrypto-sha2", feature="rustcrypto-sha3"))]
     pub type HybridKemMlkem768Rsa3072HmacSha256 = HybridKem::<
-        WrappedMlKem768,
+        MlKem768, //WrappedMlKem768,
         RsaOaepKem<U384,U32,Sha256,Sha256>,
-        QsfCombiner<Okdf3::<Sha3_256, kdfs::u0>, LabelMlKey768Rsa3072HmacSha256>, U32>;
+        QsfCombiner<Okdf3::<Sha3_256, kdfs::u0>, LabelMlKey768Rsa3072HmacSha256>, 
+    >;
     
     #[cfg(all(feature="rustcrypto-rsa", feature="rustcrypto-sha2"))]
     impl AssociatedOid for HybridKemMlkem768Rsa3072HmacSha256
@@ -1095,9 +1005,10 @@ pub mod draft_ietf_lamps_pq_composite_kem_07
     // pub type U1766 = UInt<UInt<UInt<UInt<UInt<UInt<UInt<UInt<UInt<UInt<UInt<UTerm, B1>, B1>, B0>, B1>, B1>, B1>, B0>, B0>, B1>, B1>, B0>;
     #[cfg(all(feature="rustcrypto-rsa", feature="rustcrypto-sha2"))]
     pub type HybridKemMlkem1024Rsa3072HmacSha512 = HybridKem::<
-        WrappedMlKem1024,
+        MlKem1024, //WrappedMlKem1024,
         RsaOaepKem<U384,U32,Sha256,Sha256>,
-        QsfCombiner<Okdf3<Sha3_256, kdfs::u0>, LabelMlKey1024Rsa3072HmacSha512>, U32>;
+        QsfCombiner<Okdf3<Sha3_256, kdfs::u0>, LabelMlKey1024Rsa3072HmacSha512>, 
+    >;
 
     #[cfg(all(feature="rustcrypto-rsa", feature="rustcrypto-sha2"))]
     impl AssociatedOid for HybridKemMlkem1024Rsa3072HmacSha512
@@ -1112,18 +1023,21 @@ pub mod draft_ietf_lamps_pq_composite_kem_07
         const LABEL: &'static[u8] = b"MLKEM768-RSAOAEP4096";
     }
 
-    // pub type U2346 = UInt<UInt<UInt<UInt<UInt<UInt<UInt<UInt<UInt<UInt<UInt<UInt<UTerm, B1>, B0>, B0>, B1>, B0>, B0>, B1>, B0>, B1>, B1>, B0>, B0>;
-    #[cfg(all(feature="rustcrypto-rsa", feature="rustcrypto-sha2"))]
-    pub type HybridKemMlkem768Rsa4096HmacSha256 = HybridKem::<
-        WrappedMlKem768,
-        RsaOaepKem<U512,U32,Sha256,Sha256>,
-        QsfCombiner<Okdf3<Sha3_256, kdfs::u0>, LabelMlKey768Rsa4096HmacSha256>, U32>;
     
     #[cfg(all(feature="rustcrypto-rsa", feature="rustcrypto-sha2"))]
-    impl AssociatedOid for HybridKemMlkem768Rsa4096HmacSha256
-    {   
-        const OID: ObjectIdentifier = ID_MLKEM768_RSA4096_SHA3_256;
-    }
+    pub type HybridKemMlkem768Rsa4096HmacSha256 = HybridKem::<
+        MlKem768, //WrappedMlKem768,
+        RsaOaepKem<U512,U32,Sha256,Sha256>,
+        QsfCombiner<Okdf3<Sha3_256, kdfs::u0>, LabelMlKey768Rsa4096HmacSha256>, 
+    >;
+    
+    // TODO: This AssociatedOid impl is disabled due to RustCrypto/hybrid-array#66
+    // The nested UInt type becomes too deeply nested for hybrid-array to support
+    // #[cfg(all(feature="rustcrypto-rsa", feature="rustcrypto-sha2"))]
+    // impl AssociatedOid for HybridKemMlkem768Rsa4096HmacSha256
+    // {   
+    //     const OID: ObjectIdentifier = ID_MLKEM768_RSA4096_SHA3_256;
+    // }
     
 
     #[derive(Debug)]
@@ -1135,9 +1049,10 @@ pub mod draft_ietf_lamps_pq_composite_kem_07
     // pub type U2346 = UInt<UInt<UInt<UInt<UInt<UInt<UInt<UInt<UInt<UInt<UInt<UInt<UTerm, B1>, B0>, B0>, B1>, B0>, B0>, B1>, B0>, B1>, B1>, B0>, B0>;
     #[cfg(all(feature="rustcrypto-bp256", feature="rustcrypto-sha2"))]
     pub type HybridKemMlkem768BP256r1Sha3_256 = HybridKem::<
-        WrappedMlKem768,
-        EcdhKemUncompressed<BrainpoolP256r1, SeedAsScalar>,
-        QsfCombiner<Okdf3<Sha3_256, kdfs::u0>, LabelMlkem768BP256r1Sha3_256>, U32>;
+        MlKem768, //WrappedMlKem768,
+        EcdhKemUncompressed<BrainpoolP256r1>,
+        QsfCombiner<Okdf3<Sha3_256, kdfs::u0>, LabelMlkem768BP256r1Sha3_256>, 
+    >;
     
     #[cfg(all(feature="rustcrypto-bp256", feature="rustcrypto-sha2"))]
     impl AssociatedOid for HybridKemMlkem768BP256r1Sha3_256
@@ -1154,9 +1069,10 @@ pub mod draft_ietf_lamps_pq_composite_kem_07
     // pub type U2346 = UInt<UInt<UInt<UInt<UInt<UInt<UInt<UInt<UInt<UInt<UInt<UInt<UTerm, B1>, B0>, B0>, B1>, B0>, B0>, B1>, B0>, B1>, B1>, B0>, B0>;
     #[cfg(all(feature="rustcrypto-bp384", feature="rustcrypto-sha2"))]
     pub type HybridKemMlkem1024BP384r1Sha3_256 = HybridKem::<
-        WrappedMlKem1024,
-        EcdhKemUncompressed<BrainpoolP384r1, SeedAsScalar>,
-        QsfCombiner<Okdf3<Sha3_256, kdfs::u0>, LabelMlkem1024BP384r1Sha3_256>, U32>;
+        MlKem1024, //WrappedMlKem1024,
+        EcdhKemUncompressed<BrainpoolP384r1>,
+        QsfCombiner<Okdf3<Sha3_256, kdfs::u0>, LabelMlkem1024BP384r1Sha3_256>, 
+    >;
     
     #[cfg(all(feature="rustcrypto-bp384", feature="rustcrypto-sha2"))]
     impl AssociatedOid for HybridKemMlkem1024BP384r1Sha3_256
@@ -1170,7 +1086,9 @@ pub mod draft_ietf_lamps_pq_composite_kem_07
 /// Xwing Kem defines in a draft RFC. Uses MlKem768, X25519 and a kdf based on Sha3 with a specific label
 #[cfg(all(feature="rustcrypto-ml-kem", feature="rustcrypto-x25519", feature="rustcrypto-sha3"))]
 pub mod xwing {
-    use crate::*;
+    use ::ml_kem::MlKem768;
+
+use crate::*;
     pub struct LabelXWing;
     impl super::Label for LabelXWing{
         // The label is ascii art for an X-wing which looks a bit odd with escape sequences...5c2e2f2f5e5c
@@ -1178,17 +1096,22 @@ pub mod xwing {
                                        /^\\";
     }
     pub type XwingMlKem768X25519 = HybridKem::<
-            WrappedMlKem768,
-            X25519Capsulator<SeedAsScalar>,
+            MlKem768, //WrappedMlKem768,
+            X25519Kem,
             QsfCombiner<Okdf3<Sha3_256, kdfs::u0>, LabelXWing>, 
-            ExpandSeed<U32, Shake256>>;
+    >;
 }
 
 
 #[cfg(all(feature="rustcrypto-ml-kem"))]
 pub mod draft_irtf_cfrg_concrete_hybrid_kems
 {
-    use crate::*;
+    #[cfg(all(feature="rustcrypto-ml-kem", feature="rustcrypto-p256", feature="rustcrypto-sha3"))]
+use ::ml_kem::MlKem768;
+#[cfg(all(feature="rustcrypto-ml-kem", feature="rustcrypto-p384", feature="rustcrypto-sha3"))]
+use ::ml_kem::MlKem1024;
+
+use crate::*;
     
     pub struct LabelMlKem768P256;
     impl super::Label for LabelMlKem768P256 {
@@ -1197,10 +1120,10 @@ pub mod draft_irtf_cfrg_concrete_hybrid_kems
     
     #[cfg(all(feature="rustcrypto-ml-kem", feature="rustcrypto-p256", feature="rustcrypto-sha3"))]
     pub type ConcreteMlKem768P256 = HybridKem::<
-            WrappedMlKem768,
-            EcdhKemUncompressed<NistP256,SeedAsScalar>,
+            MlKem768, //WrappedMlKem768,
+            EcdhKemUncompressed<NistP256>,
             QsfCombiner<Okdf3<Sha3_256, kdfs::u0>, LabelMlKem768P256>, 
-            ExpandSeed<U32, Shake256> >;
+    >;
 
     
     pub struct LabelMlKem1024P384;
@@ -1210,10 +1133,10 @@ pub mod draft_irtf_cfrg_concrete_hybrid_kems
 
     #[cfg(all(feature="rustcrypto-ml-kem", feature="rustcrypto-p384", feature="rustcrypto-sha3"))]
     pub type ConcreteMlKem1024P384 = HybridKem::<
-            WrappedMlKem1024,
-            EcdhKemUncompressed<NistP384,SeedAsScalar>,
+            MlKem1024, //WrappedMlKem1024,
+            EcdhKemUncompressed<NistP384>,
             QsfCombiner<Okdf3<Sha3_256, kdfs::u0>, LabelMlKem1024P384>, 
-            ExpandSeed<U32, Shake256> >;
+    >;
 
 }
 
@@ -1223,11 +1146,59 @@ pub mod draft_irtf_cfrg_concrete_hybrid_kems
 #[cfg(all(feature="rustcrypto-sha2", any(feature="rustcrypto-p256", feature="rustcrypto-p384")))]
 pub mod jwe {
     use crate::*;
+    use crate::eckem::{EcdhKemRaw2};
+    use crate::kem_with_kdf::{JwaKdf};
 
-    pub type JweKemEcSha256<'a,C,N> = KemWithKdf::<EcdhKemRaw::<C, SeedAsScalar>, CombinerNoKeys, JwaKdf<'a,ConcatKdf<Sha256>,true>,N>;
+    pub type JweKemEcSha256<C,N> = KemWithKdf::<EcdhKemRaw2::<C>, CombinerNoKeys, JwaKdf<ConcatKdf<Sha256>,true>,N>;
 
     #[cfg(all(feature="rustcrypto-p256"))]
-    pub type JweKemP256Sha256<'a,N> = JweKemEcSha256<'a,NistP256,N>;
+    pub type JweKemP256Sha256<N> = JweKemEcSha256<NistP256,N>;
     #[cfg(all(feature="rustcrypto-p384"))]
-    pub type JweKemP384Sha256<'a,N> = JweKemEcSha256<'a,NistP384,N>;
+    pub type JweKemP384Sha256<N> = JweKemEcSha256<NistP384,N>;
+    #[cfg(all(feature="rustcrypto-p521"))]
+    pub type JweKemP521Sha256<N> = JweKemEcSha256<NistP521,N>;
+    
+}
+
+
+#[cfg(all(feature="rustcrypto-x448", any(feature="rustcrypto-ml-kem", feature="rustcrypto-sha3")))]
+pub mod pgp {
+    use kdfs::Label;
+
+    pub struct OpenPgpLabelMlKem1025X448;
+    impl Label for OpenPgpLabelMlKem1025X448 {
+        const LABEL: &'static[u8] = &hex_literal::hex!("24 4F 70 65 6E 50 47 50 43 6F 6D 70 6F 73 69 74 65 4B 44 46 76 31 15");
+    }
+
+    pub type HybridCapsulatorOpenPgpMlKem1024X448 = crate::hybrid::HybridKem::<
+            crate::x448kem::X448Kem,
+            //crate::x25519kem::X25519Capsulator<crate::eckem::SeedAsScalar>,
+            //crate::ml_kem::MlKemWrapper<ml_kem::MlKem1024>,
+            ml_kem::MlKem1024,
+            crate::hybrid::QsfCombiner2<kdfs::iso11770_6::Okdf1<sha3::Sha3_256>,OpenPgpLabelMlKem1025X448>,
+            //crate::hybrid::SplitSeed>;
+        >;
+
+    pub struct OpenPgpLabelMlKem768X25519;
+    impl Label for OpenPgpLabelMlKem768X25519 {
+        const LABEL: &'static[u8] = &hex_literal::hex!("23  4F 70 65 6E 50 47 50 43 6F 6D 70 6F 73 69 74 65 4B 44 46 76 31 15");
+    }
+
+   pub type HybridCapsulatorOpenPgpMlKem768X25519 = crate::hybrid::HybridKem::<
+            crate::x25519kem::X25519Kem,
+            ml_kem::MlKem768,
+            crate::hybrid::QsfCombiner2<kdfs::iso11770_6::Okdf1<sha3::Sha3_256>,OpenPgpLabelMlKem768X25519>,
+            //crate::hybrid::SplitSeed>;
+         >;
+    
+// pub type HybridCapsulatorOpenPgpMlKem1024X448 = crate::hybrid::HybridKem::<crate::mlkem::WrappedMlKem1024,
+//         crate::x448kem::X448Capsulator<crate::eckem::SeedAsScalar>,
+//         crate::hybrid::QsfCombiner<kdfs::iso11770_6::Okdf3::<sha3::Sha3_256, kdfs::u0>, crate::draft_ietf_lamps_pq_composite_kem_07::LabelMlKey1024X448Sha3_256>, 
+//         crate::hybrid::SplitSeed /*typenum::U32*/>;
+
+        // pub type HybridCapsulatorOpenPgpMlKem1024X448 = crate::hybrid::HybridKem::<
+        //     crate::mlkem::WrappedMlKem768,
+        //     crate::eckem::EcdhKemUncompressed<p256::NistP256,crate::eckem::SeedAsScalar>,
+        //     crate::hybrid::QsfCombiner<kdfs::iso11770_6::Okdf3<sha3::Sha3_256, kdfs::u0>, crate::draft_irtf_cfrg_concrete_hybrid_kems::LabelMlKem768P256>, 
+        //     crate::hybrid::ExpandSeed<p256::U32, shake::Shake256> >;
 }

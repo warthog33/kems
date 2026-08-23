@@ -1,9 +1,8 @@
 use base64::Engine;
 use der::{Any, Choice, Decode, Length, Sequence, DecodePem, asn1::{BitString, OctetString}};
 use elliptic_curve::Error;
-use generic_array::GenericArray;
 use hex_literal::hex;
-use kems::{Capsulator, Decapsulate, mlkem::WrappedMlKem512};
+use kem::Decapsulate;
 
 
 // ML-KEM-PrivateKey ::= CHOICE {
@@ -34,7 +33,9 @@ struct SeedAndExpandedKey
 // openssl pkeyutl -encap -pubin -inkey ml-kem-public-key.pem -secret ss1.dat -out ctext.dat
 //
 #[test]
-fn test_ml_kem_512 () -> Result<(), Error>{    
+fn test_ml_kem_512 () -> Result<(), Error>{   
+
+
     let private_key = "-----BEGIN PRIVATE KEY-----\n\
         MIIGvgIBADALBglghkgBZQMEBAEEggaqMIIGpgRAMSah+Hu3Z6LU9N9YEZLi7BT3\n\
         R6lF1SdIAU36vU6Py+XSB9gzZvwgrBaWGUS3Wu0rxW/Z4iHOrdD1qpXvKNE5EwSC\n\
@@ -114,8 +115,12 @@ fn test_ml_kem_512 () -> Result<(), Error>{
     assert_eq! ( ct.len(), 768);
 
     //let decapsulator = WrappedMlKem512::try_from_slice_decap(&seed_and_expanded_key.seed.as_bytes()).unwrap(); 
-    let decapsulator = WrappedMlKem512::from_bytes_decap(&seed_and_expanded_key.seed.as_bytes().try_into().unwrap()); 
-    let ss2 = decapsulator.decapsulate(&GenericArray::from_slice(ct.as_slice())).unwrap();
+    //let decapsulator = WrappedMlKem512::from_bytes_decap(&seed_and_expanded_key.seed.as_bytes().try_into().unwrap()); 
+    let decapsulator = ml_kem::ml_kem_512::DecapsulationKey::from_seed(seed_and_expanded_key.seed.as_bytes().try_into().unwrap());
+
+    //let ss2 = decapsulator.decapsulate_old(&GenericArray::from_slice(ct.as_slice())).unwrap();
+    let ss2 = decapsulator.decapsulate(&ct.as_slice().try_into().unwrap());
+    //let ss2 = kem::TryDecapsulate::try_decapsulate(&decapsulator2, &kems::Array::from_slice(ct.as_slice())).unwrap();
 
     assert_eq! ( ss2, ss);
 

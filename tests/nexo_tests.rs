@@ -1,8 +1,9 @@
 use elliptic_curve::PrimeField;
 use hex_literal::hex;
 use kdfs::ansi_x9_63::X963Kdf;
-use kems::{Capsulator, EncapsulateDeterministic2, Decapsulate, eckem::{EcRawEncoder, EcdhKem}, kem_with_kdf::{CombinerNoKeys, KemWithKdf}};
-use kems::generic_array::{GenericArray, typenum::consts::U32};
+use kem::Decapsulate;
+use kems::{KemExtensions, EncapsulateDeterministic, eckem::{EcRaw2Encoder, EcdhKem}, kem_with_kdf::{CombinerNoKeys, KemWithKdf}};
+use p256::U32;
 use p521::NistP521;
 use sha2::Sha512;
 
@@ -24,15 +25,15 @@ fn test_ecdh ()
     let st = p521::Scalar::from_str_vartime(static_d).unwrap();
     let d = p521::SecretKey::from_scalar(st).unwrap();
 
-    let encapsulator = KemWithKdf::<EcdhKem<NistP521, EcRawEncoder<NistP521>>, CombinerNoKeys, X963Kdf<Sha512>, U32>::from_public_key(d.public_key());
-    let (ephem_pub2, key3) = encapsulator.encapsulate_deterministic(&ephem_d ).unwrap();
+    let encapsulator = KemWithKdf::<EcdhKem<NistP521, EcRaw2Encoder<NistP521>>, CombinerNoKeys, X963Kdf<Sha512>, U32>::from_public_key(d.public_key());
+    let (ephem_pub2, key3) = encapsulator.encapsulate_deterministic(&ephem_d );
 
     assert_eq!(ephem_pub2.as_slice(), &ephem_pub);
     assert_eq!(key3, key);
 
-    let decapsulator = KemWithKdf::<EcdhKem<NistP521, EcRawEncoder<NistP521>>, CombinerNoKeys, X963Kdf<Sha512>, U32>::from_private_key(d);
+    let decapsulator = KemWithKdf::<EcdhKem<NistP521, EcRaw2Encoder<NistP521>>, CombinerNoKeys, X963Kdf<Sha512>, U32>::from_private_key(d);
 
-    let key2 = decapsulator.decapsulate(&GenericArray::from_slice(&ephem_pub)).unwrap();
+    let key2 = decapsulator.decapsulate(&ephem_pub.into());
 
     assert_eq!(key2, key)
 
