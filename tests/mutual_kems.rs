@@ -330,7 +330,7 @@ struct ClassicMcElieceDecapsulationKey {secret: classic_mceliece_rust::SecretKey
 
 impl Generate for ClassicMcElieceDecapsulationKey
 {
-    fn try_generate_from_rng<R: rand::TryCryptoRng + ?Sized>(rng: &mut R) -> Result<Self, R::Error> {
+    fn try_generate_from_rng<R: rand::TryCryptoRng + ?Sized>(_rng: &mut R) -> Result<Self, R::Error> {
         // Seed a deterministic CSPRNG
         let mut rng = <rand_chacha::ChaCha20Rng as rand_chacha::rand_core::SeedableRng>::from_seed([0x11u8; 32]);
         let (public_key, secret_key) = classic_mceliece_rust::keypair_boxed(&mut rng);
@@ -363,7 +363,7 @@ impl Encapsulate for ClassicMcElieceEncapsulationKey
 {
     type Kem = ClassicMcElieceWrapper;
 
-    fn encapsulate_with_rng<R>(&self, rng: &mut R) -> (Ciphertext<Self::Kem>, SharedKey<Self::Kem>)
+    fn encapsulate_with_rng<R>(&self, _rng: &mut R) -> (Ciphertext<Self::Kem>, SharedKey<Self::Kem>)
     where
         R: rand::prelude::CryptoRng + ?Sized 
     {

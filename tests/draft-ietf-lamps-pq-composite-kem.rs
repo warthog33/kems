@@ -4,9 +4,9 @@ use cipher::common::KeyExport;
 use cipher::typenum::Unsigned;
 use kem::{TryDecapsulate, Encapsulate, FromSeed, Kem, TryKeyInit};
 use kems::{Array, KemExtensions};
-use kems::draft_ietf_lamps_pq_composite_kem_07::{HybridKemMlKem768P256Sha3_256, HybridKemMlKem768X25519Sha3_256, HybridKemMlkem768BP256r1Sha3_256, HybridKemMlkem768Rsa2048HmacSha256, HybridKemMlkem768Rsa3072HmacSha256};
-use kems::draft_ietf_lamps_pq_composite_kem_07::{HybridKemMlKem768P384Sha3_256,HybridKemMlkem1024Rsa3072HmacSha512,HybridKemMlKem1024P384Sha3_256};
-use kems::draft_ietf_lamps_pq_composite_kem_07::{HybridKemMlKem1024X448Sha3_256,HybridKemMlKem1024P521Sha3_256, HybridKemMlkem768Rsa4096HmacSha256, HybridKemMlkem1024BP384r1Sha3_256};
+use kems::draft_ietf_lamps_pq_composite_kem::{HybridKemMlKem768P256Sha3_256, HybridKemMlKem768X25519Sha3_256, HybridKemMlkem768BP256r1Sha3_256, HybridKemMlkem768Rsa2048HmacSha256, HybridKemMlkem768Rsa3072HmacSha256};
+use kems::draft_ietf_lamps_pq_composite_kem::{HybridKemMlKem768P384Sha3_256,HybridKemMlkem1024Rsa3072HmacSha512,HybridKemMlKem1024P384Sha3_256};
+use kems::draft_ietf_lamps_pq_composite_kem::{HybridKemMlKem1024X448Sha3_256,HybridKemMlKem1024P521Sha3_256, HybridKemMlkem768Rsa4096HmacSha256, HybridKemMlkem1024BP384r1Sha3_256};
 use ml_kem::MlKem768;
 use serde_json::Value;
 

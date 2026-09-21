@@ -8,7 +8,6 @@ use kems::kem_with_kdf::{KemWithKdf, CombinerAllPubKeys, KemAuthWithKdf};
 use kems::x25519kem::{X25519Kem,X25519AuthKem};
 use kems::x448kem::{X448AuthKem,X448Kem};
 use p256::U32;
-use rand_core::OsRng;
 use sha2::Sha256;
 use x25519_dalek::{StaticSecret, PublicKey};
 
@@ -16,7 +15,7 @@ use x25519_dalek::{StaticSecret, PublicKey};
 #[test]
 fn simple_x25519_kem () 
 {
-    let recipient_secret_key = StaticSecret::random_from_rng(&mut OsRng);
+    let recipient_secret_key = StaticSecret::random();
     let recipient_public_key = PublicKey::from(&recipient_secret_key);
 
     //let encapsulator = X25519Capsulator::<SeedAsScalar>::from_public_key(recipient_public_key);
@@ -32,7 +31,7 @@ fn simple_x25519_kem ()
 #[test]
 fn simple_x25519_kem2 () 
 {
-    let recipient_secret_key = StaticSecret::random_from_rng(&mut OsRng);
+    let recipient_secret_key = StaticSecret::random();
     let recipient_public_key = PublicKey::from(&recipient_secret_key);
 
     let encapsulator = <X25519Kem as Kem>::EncapsulationKey::from_key(recipient_public_key);
@@ -49,7 +48,7 @@ fn simple_x25519_kem2 ()
 #[test]
 fn simple_x25519_kem3 () 
 {
-    let recipient_secret_key = StaticSecret::random_from_rng(&mut OsRng);
+    let recipient_secret_key = StaticSecret::random();
     let recipient_public_key = PublicKey::from(&recipient_secret_key);
 
     let encapsulator = <KemWithKdf::<X25519Kem, CombinerAllPubKeys, Kdf1::<Sha256>,U16> as Kem>::EncapsulationKey::from_key(recipient_public_key);
@@ -71,9 +70,9 @@ fn simple_x25519_kem3 ()
 
 #[test]
 fn auth_x25519_kem () {
-    let recipient_secret_key = StaticSecret::random_from_rng(&mut OsRng);
+    let recipient_secret_key = StaticSecret::random();
     let recipient_public_key = PublicKey::from(&recipient_secret_key);
-    let sender_secret_key = StaticSecret::random_from_rng(&mut OsRng);
+    let sender_secret_key = StaticSecret::random();
     let sender_public_key = PublicKey::from(&sender_secret_key);
 
     type X25519Kdf1Sha256 = KemAuthWithKdf::<X25519AuthKem, CombinerAllPubKeys, Kdf1::<Sha256>,U16>;

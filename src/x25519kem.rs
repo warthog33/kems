@@ -32,9 +32,9 @@
 //! use sha2::Sha256;
 //! use x25519_dalek::{StaticSecret, PublicKey};
 //! 
-//! let sender_secret_key = StaticSecret::random_from_rng(&mut OsRng);
+//! let sender_secret_key = StaticSecret::random();
 //! let sender_public_key = PublicKey::from(&sender_secret_key);
-//! let recipient_secret_key = StaticSecret::random_from_rng(&mut OsRng);
+//! let recipient_secret_key = StaticSecret::random();
 //! let recipient_public_key = PublicKey::from(&recipient_secret_key);
 //! 
 //! let auth_encapsulator = KemAuthWithKdf::<X25519AuthKem, CombinerAllPubKeys, Kdf1::<Sha256>,U32>::encap_from_keys(recipient_public_key, sender_secret_key);

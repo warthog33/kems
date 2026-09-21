@@ -20,7 +20,7 @@ use crate::kem_with_kdf::{CombinerCiphertext, KemWithKdf};
 
 
 #[cfg(all(feature="rustcrypto-ml-kem", feature="rustcrypto-x25519", feature="rustcrypto-sha3"))]
-use crate::{hybrid::QsfCombiner2, x25519kem::X25519Kem, xwing::LabelXWing};
+use crate::{hybrid::QsfCombiner2, x25519kem::X25519Kem};
 
 #[allow(unused)]
 use kdfs::iso11770_6::Okdf3;
@@ -168,6 +168,40 @@ pub trait SetKdf {
     fn set_kdf(&mut self, kdf: Self::Kdf);
 }
 
+
+
+///
+/// Label is used as a pseudo const generic for strings, allow for the type 
+/// to be included in a new type definition
+/// 
+macro_rules! define_label {
+    ($name:ident, $label_bytes:literal) => {
+        #[derive(Debug)]
+        pub struct $name;
+
+        impl Label for $name {
+            const LABEL: &'static [u8] = $label_bytes;
+        }
+    };
+}
+
+define_label!(LabelXWing, b"\\.//^\\");
+define_label!(LabelMlKem1024P384, b"MLKEM1024-P384");// https://datatracker.ietf.org/doc/html/draft-ietf-lamps-pq-composite-kem-19
+define_label!(LabelMlKem1024EcdhP521, b"MLKEM1024-P521"); // https://datatracker.ietf.org/doc/html/draft-ietf-lamps-pq-composite-kem-19
+define_label!(LabelMlKem1024X448, b"MLKEM1024-X448"); // https://datatracker.ietf.org/doc/html/draft-ietf-lamps-pq-composite-kem-19
+define_label!(LabelMlKem768P256, b"MLKEM768-P256"); // https://datatracker.ietf.org/doc/html/draft-ietf-lamps-pq-composite-kem-19
+define_label!(LabelMlKey768EcdhP384, b"MLKEM768-P384"); // https://datatracker.ietf.org/doc/html/draft-ietf-lamps-pq-composite-kem-19
+define_label!(LabelMlKey768Rsa2048HmacSha256, b"MLKEM768-RSAOAEP2048"); // https://datatracker.ietf.org/doc/html/draft-ietf-lamps-pq-composite-kem-19
+define_label!(LabelMlKey768Rsa3072HmacSha256, b"MLKEM768-RSAOAEP3072"); // https://datatracker.ietf.org/doc/html/draft-ietf-lamps-pq-composite-kem-19
+define_label!(LabelMlKey1024Rsa3072HmacSha512, b"MLKEM1024-RSAOAEP3072"); // https://datatracker.ietf.org/doc/html/draft-ietf-lamps-pq-composite-kem-19
+define_label!(LabelMlKey768Rsa4096HmacSha256, b"MLKEM768-RSAOAEP4096"); // https://datatracker.ietf.org/doc/html/draft-ietf-lamps-pq-composite-kem-19
+define_label!(LabelMlkem768BP256r1Sha3_256, b"MLKEM768-BP256"); // https://datatracker.ietf.org/doc/html/draft-ietf-lamps-pq-composite-kem-19
+define_label!(LabelMlkem1024BP384r1Sha3_256, b"MLKEM1024-BP384"); // https://datatracker.ietf.org/doc/html/draft-ietf-lamps-pq-composite-kem-19
+
+define_label!(QsfLabelMlKem768P256, b"QSF-KEM(ML-KEM-768,P-256)-XOF(SHAKE256)-KDF(SHA3-256)");
+define_label!(QsfLabelMlKem1024P384, b"QSF-KEM(ML-KEM-1024,P-384)-XOF(SHAKE256)-KDF(SHA3-256)");
+define_label!(UniversalCombinerLabelMlKem768P256, b"KitchenSink-KEM(ML-KEM-768,P-256)-XOF(SHAKE256)-KDF(HKDF-SHA-256)");
+define_label!(UniversalCombinerLabelMlKem768X25519, b"KitchenSink-KEM(ML-KEM-768,X25519)-XOF(SHAKE256)-KDF(HKDF-SHA-256)");
 
 
 
@@ -741,26 +775,7 @@ pub mod draft_irtf_cfrg_hybrid_kems {
     use crate::*;
     
     
-    #[derive(Debug)]
-    pub struct QsfLabelMlKem768P256;
-    impl super::Label for QsfLabelMlKem768P256 {
-        const LABEL: &'static[u8] = b"QSF-KEM(ML-KEM-768,P-256)-XOF(SHAKE256)-KDF(SHA3-256)";
-    }
-    pub struct UniversalCombinerLabelMlKem768P256;
-    impl super::Label for UniversalCombinerLabelMlKem768P256 {
-        const LABEL: &'static[u8] = b"KitchenSink-KEM(ML-KEM-768,P-256)-XOF(SHAKE256)-KDF(HKDF-SHA-256)";
-    }
-
-    #[derive(Debug)]
-    pub struct UniversalCombinerLabelMlKem768X25519;
-    impl super::Label for UniversalCombinerLabelMlKem768X25519 {
-        const LABEL: &'static[u8] = b"KitchenSink-KEM(ML-KEM-768,X25519)-XOF(SHAKE256)-KDF(HKDF-SHA-256)";
-    }
-    #[derive(Debug)]
-    pub struct QsfLabelMlKem1024P384;
-    impl super::Label for QsfLabelMlKem1024P384 {
-        const LABEL: &'static[u8] = b"QSF-KEM(ML-KEM-1024,P-384)-XOF(SHAKE256)-KDF(SHA3-256)";
-    }
+  
 
     // #[cfg(all(feature="rustcrypto-ml-kem", feature="rustcrypto-p256", feature="rustcrypto-sha3"))]
     // pub type HybridKemQsfMlKem768P256 = super::hybrid::HybridKem::<
@@ -789,17 +804,17 @@ pub mod draft_irtf_cfrg_hybrid_kems {
 
 pub mod draft_ietf_hpke_pq
 {
-    #[derive(Debug)]
-    pub struct QsfLabelP256MlKem768;
-    impl super::Label for QsfLabelP256MlKem768 {
-        const LABEL: &'static[u8] = b"MLKEM768-P256"; // https://datatracker.ietf.org/doc/draft-irtf-cfrg-concrete-hybrid-kems/
-    }
+    // #[derive(Debug)]
+    // pub struct QsfLabelP256MlKem768;
+    // impl super::Label for QsfLabelP256MlKem768 {
+    //     const LABEL: &'static[u8] = b"MLKEM768-P256"; // https://datatracker.ietf.org/doc/draft-irtf-cfrg-concrete-hybrid-kems/
+    // }
     
-    #[derive(Debug)]
-    pub struct QsfLabelP384MlKem1024;
-    impl super::Label for QsfLabelP384MlKem1024 {
-        const LABEL: &'static[u8] = b"MLKEM1024-P384"; 
-    }
+    // #[derive(Debug)]
+    // pub struct QsfLabelP384MlKem1024;
+    // impl super::Label for QsfLabelP384MlKem1024 {
+    //     const LABEL: &'static[u8] = b"MLKEM1024-P384"; 
+    // }
 }
 
 pub mod apple_hpke {
@@ -819,8 +834,9 @@ pub mod apple_hpke {
 /// Composite KEMs as describe in a draft RFC. 
 /// 
 /// Combines ML-KEM with an Elliptic Curve or RSA based KEM to create a new KEM
+/// Currently based on versio 19 of the spec
 #[cfg(all(feature="rustcrypto-ml-kem", feature="rustcrypto-sha3"))]
-pub mod draft_ietf_lamps_pq_composite_kem_07
+pub mod draft_ietf_lamps_pq_composite_kem
 {
     #[cfg(all(feature="rustcrypto-bp256", feature="rustcrypto-sha2"))]
     use bp256::BrainpoolP256r1;
@@ -843,7 +859,12 @@ pub mod draft_ietf_lamps_pq_composite_kem_07
     pub const ID_MLKEM1024_ECDH_BRAINPOOL_P384R1_SHA3_256:ObjectIdentifier = ObjectIdentifier::new_unwrap("1.3.6.1.5.5.7.6.64");
     pub const ID_MLKEM1024_X448_SHA3_256:ObjectIdentifier = ObjectIdentifier::new_unwrap("1.3.6.1.5.5.7.6.65");
     pub const ID_MLKEM1024_ECDH_P521_SHA3_256:ObjectIdentifier = ObjectIdentifier::new_unwrap("1.3.6.1.5.5.7.6.66");
-    
+
+
+
+
+
+
     /// Adopted name of Xwing hybrid kem, which combines ML-KEM 768 with X25519 and an X-wing shaped ascii label
     #[cfg(all(feature="rustcrypto-x25519"))]
     pub type HybridKemMlKem768X25519Sha3_256 = XwingMlKem768X25519;
@@ -855,38 +876,38 @@ pub mod draft_ietf_lamps_pq_composite_kem_07
     }
     
     /// Label for the MLKem768-P256 hybrid KEM
-    #[cfg(all(feature="rustcrypto-p256"))]
-    pub struct LabelMlKem768P256Sha3_256;
-    #[cfg(all(feature="rustcrypto-p256"))]
-    impl super::Label for LabelMlKem768P256Sha3_256{
-        const LABEL: &'static[u8] = b"MLKEM768-P256";
-    }
+    // #[cfg(all(feature="rustcrypto-p256"))]
+    // pub struct LabelMlKem768P256Sha3_256;
+    // #[cfg(all(feature="rustcrypto-p256"))]
+    // impl super::Label for LabelMlKem768P256Sha3_256{
+    //     const LABEL: &'static[u8] = b"MLKEM768-P256";
+    // }
 
     #[cfg(all(feature="rustcrypto-p256"))]
     pub type HybridKemMlKem768P256Sha3_256 = crate::hybrid::HybridKem::<
         MlKem768,
         EcdhKemUncompressed<NistP256>,
-        QsfCombiner<Okdf3::<Sha3_256, kdfs::u0>, LabelMlKem768P256Sha3_256>, 
+        QsfCombiner<Okdf3::<Sha3_256, kdfs::u0>, LabelMlKem768P256>, 
     >;
-
+ 
     #[cfg(all(feature="rustcrypto-p256"))]
     impl AssociatedOid for HybridKemMlKem768P256Sha3_256
     {   
         const OID: ObjectIdentifier = ID_MLKEM768_ECDH_P256_SHA3_256;
     }
 
-    #[cfg(all(feature="rustcrypto-p384"))]
-    pub struct LabelMlKey768EcdhP384Sha3_256;
-    #[cfg(all(feature="rustcrypto-p384"))]
-    impl Label for LabelMlKey768EcdhP384Sha3_256{
-        const LABEL: &'static[u8] = b"MLKEM768-P384";
-    } 
+    // #[cfg(all(feature="rustcrypto-p384"))]
+    // pub struct LabelMlKey768EcdhP384Sha3_256;
+    // #[cfg(all(feature="rustcrypto-p384"))]
+    // impl Label for LabelMlKey768EcdhP384Sha3_256{
+    //     const LABEL: &'static[u8] = b"MLKEM768-P384";
+    // } 
 
     #[cfg(all(feature="rustcrypto-p384"))]
     pub type HybridKemMlKem768P384Sha3_256 = crate::hybrid::HybridKem::<
         MlKem768,
         EcdhKemUncompressed<NistP384>,
-        QsfCombiner<Okdf3::<Sha3_256, kdfs::u0>,LabelMlKey768EcdhP384Sha3_256>, 
+        QsfCombiner<Okdf3::<Sha3_256, kdfs::u0>,LabelMlKey768EcdhP384>, 
     >;
 
     #[cfg(all(feature="rustcrypto-p384"))]
@@ -895,16 +916,16 @@ pub mod draft_ietf_lamps_pq_composite_kem_07
         const OID: ObjectIdentifier = ID_MLKEM768_ECDH_P384_SHA3_256;
     }
 
-    pub struct LabelMlKey1024EcdhP384Sha3_256; //id-MLKEM768-X25519-SHA3-256
-    impl super::Label for LabelMlKey1024EcdhP384Sha3_256{
-        const LABEL: &'static[u8] = b"MLKEM1024-P384";
-    }
+    // pub struct LabelMlKey1024EcdhP384Sha3_256; //id-MLKEM768-X25519-SHA3-256
+    // impl super::Label for LabelMlKey1024EcdhP384Sha3_256{
+    //     const LABEL: &'static[u8] = b"MLKEM1024-P384";
+    // }
 
     #[cfg(all(feature="rustcrypto-p384"))]
     pub type HybridKemMlKem1024P384Sha3_256 = crate::hybrid::HybridKem::<
         MlKem1024,
         EcdhKemUncompressed<NistP384>,
-        QsfCombiner<Okdf3::<Sha3_256, kdfs::u0>,LabelMlKey1024EcdhP384Sha3_256>, 
+        QsfCombiner<Okdf3::<Sha3_256, kdfs::u0>,LabelMlKem1024P384>, 
     >;
 
     #[cfg(all(feature="rustcrypto-p384"))]
@@ -915,17 +936,17 @@ pub mod draft_ietf_lamps_pq_composite_kem_07
 
 
 
-    #[derive(Debug)]
-    pub struct LabelMlKey1024X448Sha3_256;
-    impl super::Label for LabelMlKey1024X448Sha3_256{
-        const LABEL: &'static[u8] = b"MLKEM1024-X448";
-    }   
+    // #[derive(Debug)]
+    // pub struct LabelMlKey1024X448Sha3_256;
+    // impl super::Label for LabelMlKey1024X448Sha3_256{
+    //     const LABEL: &'static[u8] = b"MLKEM1024-X448";
+    // }   
     
     #[cfg(all(feature="rustcrypto-x448"))]
     pub type HybridKemMlKem1024X448Sha3_256 = crate::hybrid::HybridKem::<
         MlKem1024,
         X448Kem,
-        QsfCombiner<Okdf3::<Sha3_256, kdfs::u0>, LabelMlKey1024X448Sha3_256>, 
+        QsfCombiner<Okdf3::<Sha3_256, kdfs::u0>, LabelMlKem1024X448>, 
     >;
 
     #[cfg(all(feature="rustcrypto-x448"))]
@@ -936,17 +957,17 @@ pub mod draft_ietf_lamps_pq_composite_kem_07
 
 
 
-    #[derive(Debug)]
-    pub struct LabelMlKey1024EcdhP521Sha3_256;
-    impl super::Label for LabelMlKey1024EcdhP521Sha3_256{
-        const LABEL: &'static[u8] = b"MLKEM1024-P521";
-    }
+    // #[derive(Debug)]
+    // pub struct LabelMlKey1024EcdhP521Sha3_256;
+    // impl super::Label for LabelMlKey1024EcdhP521Sha3_256{
+    //     const LABEL: &'static[u8] = b"MLKEM1024-P521";
+    // }
 
     #[cfg(all(feature="rustcrypto-p521"))]
     pub type HybridKemMlKem1024P521Sha3_256 = HybridKem::<
         MlKem1024, //WrappedMlKem1024,
         EcdhKemUncompressed<NistP521>,
-        QsfCombiner<Okdf3::<Sha3_256, kdfs::u0>, LabelMlKey1024EcdhP521Sha3_256>, 
+        QsfCombiner<Okdf3::<Sha3_256, kdfs::u0>, LabelMlKem1024EcdhP521>, 
     >;
 
     #[cfg(all(feature="rustcrypto-p521"))]
@@ -956,11 +977,11 @@ pub mod draft_ietf_lamps_pq_composite_kem_07
     }
 
 
-    #[derive(Debug)]
-    pub struct LabelMlKey768Rsa2048HmacSha256; //id-MLKEM768-X25519-SHA3-256
-    impl super::Label for LabelMlKey768Rsa2048HmacSha256{
-        const LABEL: &'static[u8] = b"MLKEM768-RSAOAEP2048";
-    }
+    // #[derive(Debug)]
+    // pub struct LabelMlKey768Rsa2048HmacSha256; //id-MLKEM768-X25519-SHA3-256
+    // impl super::Label for LabelMlKey768Rsa2048HmacSha256{
+    //     const LABEL: &'static[u8] = b"MLKEM768-RSAOAEP2048";
+    // }
 
     #[cfg(all(feature="rustcrypto-rsa", feature="rustcrypto-sha2"))]
     pub type HybridKemMlkem768Rsa2048HmacSha256 = HybridKem::<
@@ -976,11 +997,11 @@ pub mod draft_ietf_lamps_pq_composite_kem_07
     }
 
 
-    #[derive(Debug)]
-    pub struct LabelMlKey768Rsa3072HmacSha256; //id-MLKEM768-X25519-SHA3-256
-    impl super::Label for LabelMlKey768Rsa3072HmacSha256{
-        const LABEL: &'static[u8] = b"MLKEM768-RSAOAEP3072";
-    }
+    // #[derive(Debug)]
+    // pub struct LabelMlKey768Rsa3072HmacSha256; //id-MLKEM768-X25519-SHA3-256
+    // impl super::Label for LabelMlKey768Rsa3072HmacSha256{
+    //     const LABEL: &'static[u8] = b"MLKEM768-RSAOAEP3072";
+    // }
     #[cfg(all(feature="rustcrypto-ml-kem", feature="rustcrypto-rsa", feature="rustcrypto-sha2", feature="rustcrypto-sha3"))]
     pub type HybridKemMlkem768Rsa3072HmacSha256 = HybridKem::<
         MlKem768, //WrappedMlKem768,
@@ -995,11 +1016,11 @@ pub mod draft_ietf_lamps_pq_composite_kem_07
     }
 
 
-    #[derive(Debug)]
-    pub struct LabelMlKey1024Rsa3072HmacSha512; //id-MLKEM768-X25519-SHA3-256
-    impl super::Label for LabelMlKey1024Rsa3072HmacSha512{
-        const LABEL: &'static[u8] = b"MLKEM1024-RSAOAEP3072";
-    }
+    // #[derive(Debug)]
+    // pub struct LabelMlKey1024Rsa3072HmacSha512; //id-MLKEM768-X25519-SHA3-256
+    // impl super::Label for LabelMlKey1024Rsa3072HmacSha512{
+    //     const LABEL: &'static[u8] = b"MLKEM1024-RSAOAEP3072";
+    // }
 
     // pub type U1793 = UInt<UInt<UInt<UInt<UInt<UInt<UInt<UInt<UInt<UInt<UInt<UTerm, B1>, B1>, B1>, B0>, B0>, B0>, B0>, B0>, B0>, B0>, B1>;
     // pub type U1766 = UInt<UInt<UInt<UInt<UInt<UInt<UInt<UInt<UInt<UInt<UInt<UTerm, B1>, B1>, B0>, B1>, B1>, B1>, B0>, B0>, B1>, B1>, B0>;
@@ -1017,11 +1038,11 @@ pub mod draft_ietf_lamps_pq_composite_kem_07
     }
 
 
-    #[derive(Debug)]
-    pub struct LabelMlKey768Rsa4096HmacSha256; //id-MLKEM768-X25519-SHA3-256
-    impl super::Label for LabelMlKey768Rsa4096HmacSha256{
-        const LABEL: &'static[u8] = b"MLKEM768-RSAOAEP4096";
-    }
+    // #[derive(Debug)]
+    // pub struct LabelMlKey768Rsa4096HmacSha256; //id-MLKEM768-X25519-SHA3-256
+    // impl super::Label for LabelMlKey768Rsa4096HmacSha256{
+    //     const LABEL: &'static[u8] = b"MLKEM768-RSAOAEP4096";
+    // }
 
     
     #[cfg(all(feature="rustcrypto-rsa", feature="rustcrypto-sha2"))]
@@ -1040,11 +1061,11 @@ pub mod draft_ietf_lamps_pq_composite_kem_07
     // }
     
 
-    #[derive(Debug)]
-    pub struct LabelMlkem768BP256r1Sha3_256; //id-MLKEM768-X25519-SHA3-256
-    impl super::Label for LabelMlkem768BP256r1Sha3_256{
-        const LABEL: &'static[u8] = b"MLKEM768-BP256";
-    }
+    // #[derive(Debug)]
+    // pub struct LabelMlkem768BP256r1Sha3_256; //id-MLKEM768-X25519-SHA3-256
+    // impl super::Label for LabelMlkem768BP256r1Sha3_256{
+    //     const LABEL: &'static[u8] = b"MLKEM768-BP256";
+    // }
 
     // pub type U2346 = UInt<UInt<UInt<UInt<UInt<UInt<UInt<UInt<UInt<UInt<UInt<UInt<UTerm, B1>, B0>, B0>, B1>, B0>, B0>, B1>, B0>, B1>, B1>, B0>, B0>;
     #[cfg(all(feature="rustcrypto-bp256", feature="rustcrypto-sha2"))]
@@ -1060,11 +1081,11 @@ pub mod draft_ietf_lamps_pq_composite_kem_07
         const OID: ObjectIdentifier = ID_MLKEM768_ECDH_BRAINPOOL_P256R1_SHA3_256;
     }
     
-    #[derive(Debug)]
-    pub struct LabelMlkem1024BP384r1Sha3_256; //id-MLKEM768-X25519-SHA3-256
-    impl super::Label for LabelMlkem1024BP384r1Sha3_256{
-        const LABEL: &'static[u8] = b"MLKEM1024-BP384";
-    }
+    // #[derive(Debug)]
+    // pub struct LabelMlkem1024BP384r1Sha3_256; //id-MLKEM768-X25519-SHA3-256
+    // impl super::Label for LabelMlkem1024BP384r1Sha3_256{
+    //     const LABEL: &'static[u8] = b"MLKEM1024-BP384";
+    // }
 
     // pub type U2346 = UInt<UInt<UInt<UInt<UInt<UInt<UInt<UInt<UInt<UInt<UInt<UInt<UTerm, B1>, B0>, B0>, B1>, B0>, B0>, B1>, B0>, B1>, B1>, B0>, B0>;
     #[cfg(all(feature="rustcrypto-bp384", feature="rustcrypto-sha2"))]
@@ -1089,12 +1110,12 @@ pub mod xwing {
     use ::ml_kem::MlKem768;
 
 use crate::*;
-    pub struct LabelXWing;
-    impl super::Label for LabelXWing{
-        // The label is ascii art for an X-wing which looks a bit odd with escape sequences...5c2e2f2f5e5c
-        const LABEL: &'static[u8] = b"\\./\
-                                       /^\\";
-    }
+    // pub struct LabelXWing;
+    // impl super::Label for LabelXWing{
+    //     // The label is ascii art for an X-wing which looks a bit odd with escape sequences...5c2e2f2f5e5c
+    //     const LABEL: &'static[u8] = b"\\./\
+    //                                    /^\\";
+    // }
     pub type XwingMlKem768X25519 = HybridKem::<
             MlKem768, //WrappedMlKem768,
             X25519Kem,
@@ -1113,23 +1134,23 @@ use ::ml_kem::MlKem1024;
 
 use crate::*;
     
-    pub struct LabelMlKem768P256;
-    impl super::Label for LabelMlKem768P256 {
-        const LABEL: &'static[u8] = b"MLKEM768-P256"; // https://datatracker.ietf.org/doc/draft-irtf-cfrg-concrete-hybrid-kems/
-    }
+    // pub struct LabelMlKem768P256;
+    // impl super::Label for LabelMlKem768P256 {
+    //     const LABEL: &'static[u8] = b"MLKEM768-P256"; // https://datatracker.ietf.org/doc/draft-irtf-cfrg-concrete-hybrid-kems/
+    // }
     
     #[cfg(all(feature="rustcrypto-ml-kem", feature="rustcrypto-p256", feature="rustcrypto-sha3"))]
     pub type ConcreteMlKem768P256 = HybridKem::<
             MlKem768, //WrappedMlKem768,
-            EcdhKemUncompressed<NistP256>,
+            EcdhKemUncompressed<NistP256>,  
             QsfCombiner<Okdf3<Sha3_256, kdfs::u0>, LabelMlKem768P256>, 
     >;
 
     
-    pub struct LabelMlKem1024P384;
-    impl Label for LabelMlKem1024P384 {
-        const LABEL: &'static[u8] = b"MLKEM1024-P384"; 
-    }
+    // pub struct LabelMlKem1024P384;
+    // impl Label for LabelMlKem1024P384 {
+    //     const LABEL: &'static[u8] = b"MLKEM1024-P384"; 
+    // }
 
     #[cfg(all(feature="rustcrypto-ml-kem", feature="rustcrypto-p384", feature="rustcrypto-sha3"))]
     pub type ConcreteMlKem1024P384 = HybridKem::<
