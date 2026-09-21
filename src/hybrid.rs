@@ -500,6 +500,7 @@ impl<M: Kem, C: Kem, COM> HybridDecapsulator<M, C, COM>
 //     }
 // }
 
+#[cfg(feature="rustcrypto-sha3")] // Uses Shake256..
 impl<M, C, COM> TryKeyInit for HybridDecapsulator<M, C, COM>
 where 
     M: Kem + FromSeed,
