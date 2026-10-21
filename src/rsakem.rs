@@ -11,7 +11,7 @@
 //! use elliptic_curve::consts::*;
 //! use sha2::Sha256;
 //! use kems::{FromKey, KemExtensions};
-//! use kem::{Decapsulate, Encapsulate};
+//! use kem::{TryDecapsulate, Encapsulate};
 //! use kems::rsakem::{RsaOrigKem};
 //! use kdfs::iso18033_2::Kdf1;
 //! use rand_core::OsRng;
@@ -23,7 +23,7 @@
 //! let (ct, k_send) = encapsulator.encapsulate();
 //! 
 //! let decapsulator = RsaOrigKem::<U128, U16,Kdf1::<Sha256>>::from_private_key(recipient_private_key);
-//! let (k_recv) = decapsulator.decapsulate(&ct);
+//! let (k_recv) = decapsulator.try_decapsulate(&ct).unwrap();
 //! assert! ( k_send == k_recv);
 //!
 
@@ -32,7 +32,7 @@ use std::fmt::Debug;
 use std::ops::Add;
 
 use crate::kem_with_kdf::{CombinerNoKeys, KemWithKdf};
-use crate::{CryptoRngCore, EncapsulateDeterministic, FromKey};
+use crate::{EncapsulateDeterministic, FromKey};
 use cipher::KeySizeUser;
 use cipher::common::{KeyExport, TryKeyInit};
 use cipher::consts::{U14};
@@ -41,47 +41,47 @@ use const_oid::{AssociatedOid, ObjectIdentifier};
 use const_oid::db::rfc5912::{ID_RSAES_OAEP, RSA_ENCRYPTION};
 use digest::{FixedOutput, HashMarker};
 use kdfs::hybrid_array::{Array, ArraySize};
-use kem::{Ciphertext, Decapsulate, DecapsulationKey, Decapsulator, Encapsulate, EncapsulationKey, FromSeed, Generate, InvalidKey, Kem, Key, KeyInit, Seed, SharedKey};
+use kem::{Ciphertext, TryDecapsulate, DecapsulationKey, Decapsulator, Encapsulate, EncapsulationKey, FromSeed, Generate, InvalidKey, Kem, Key, KeyInit, Seed, SharedKey};
 use kem::consts::U1;
 use rsa::{traits::{PaddingScheme, PublicKeyParts}, Oaep, Pkcs1v15Encrypt, RsaPrivateKey, RsaPublicKey};
 use rsa::pkcs1::{DecodeRsaPrivateKey, DecodeRsaPublicKey, EncodeRsaPublicKey};
 use sha2::digest::{Digest, FixedOutputReset};
 
 
-/// Wrapper structure for making different RNG traits interoperable
-mod wrapper {
-    use std::convert::Infallible;
+// /// Wrapper structure for making different RNG traits interoperable
+// mod wrapper {
+//     use std::convert::Infallible;
 
-    pub use rsa::rand_core::{TryCryptoRng, TryRng};
+//     pub use rsa::rand_core::{TryCryptoRng, TryRng};
 
-    // RSA uses an new version of Rng. Wrap it so we can use the same Encapsulator trait
-    pub struct RngWrapper<'a, R: super::CryptoRngCore> {
-        core: &'a mut R,
-    }
-    impl<'a, R: super::CryptoRngCore> From<&'a mut R> for RngWrapper<'a, R> {
-        fn from(v: &'a mut R) -> Self {
-            Self { core: v}
-        }
-    }
+//     // RSA uses an new version of Rng. Wrap it so we can use the same Encapsulator trait
+//     pub struct RngWrapper<'a, R: super::CryptoRngCore> {
+//         core: &'a mut R,
+//     }
+//     impl<'a, R: super::CryptoRngCore> From<&'a mut R> for RngWrapper<'a, R> {
+//         fn from(v: &'a mut R) -> Self {
+//             Self { core: v}
+//         }
+//     }
 
-    impl<'a, R: super::CryptoRngCore> TryCryptoRng for RngWrapper<'a, R> {}
+//     impl<'a, R: super::CryptoRngCore> TryCryptoRng for RngWrapper<'a, R> {}
 
-    impl<'a, R: super::CryptoRngCore> TryRng for RngWrapper<'a, R> {
-        type Error = Infallible;
+//     impl<'a, R: super::CryptoRngCore> TryRng for RngWrapper<'a, R> {
+//         type Error = Infallible;
         
-        fn try_next_u32(&mut self) -> Result<u32, Self::Error> {
-            Ok(self.core.next_u32())
-        }
+//         fn try_next_u32(&mut self) -> Result<u32, Self::Error> {
+//             Ok(self.core.next_u32())
+//         }
         
-        fn try_next_u64(&mut self) -> Result<u64, Self::Error> {
-            Ok(self.core.next_u64())
-        }
+//         fn try_next_u64(&mut self) -> Result<u64, Self::Error> {
+//             Ok(self.core.next_u64())
+//         }
         
-        fn try_fill_bytes(&mut self, dst: &mut [u8]) -> Result<(), Self::Error> {
-            Ok(self.core.fill_bytes(dst))
-        }
-    }
-}
+//         fn try_fill_bytes(&mut self, dst: &mut [u8]) -> Result<(), Self::Error> {
+//             Ok(self.core.fill_bytes(dst))
+//         }
+//     }
+// }
 
 
 
@@ -308,14 +308,14 @@ where LE: ArraySize + Debug + PartialEq + Add<U14>,
 //     }
 // }
 
-impl<LE, LI, /*LK: ArrayLength<u8>,*/P> TryFrom<&[u8]> for RsaEncapsulator<LE, LI, /*LK,*/ P>
+impl<LE, LI, P> TryFrom<&[u8]> for RsaEncapsulator<LE, LI, P>
 where LE: ArraySize + Debug + PartialEq,
 LI: ArraySize + PartialEq + Debug
 {
     type Error = rsa::pkcs1::Error;
     fn try_from(value: &[u8]) -> Result<Self, Self::Error> {
         let sender_public = rsa::RsaPublicKey::from_pkcs1_der(&value)?;
-        Ok(Self { sender_public, phantom2: PhantomData, phantom1: PhantomData, /*phantom4: PhantomData,*/ phantom3: PhantomData})
+        Ok(Self { sender_public, phantom2: PhantomData, phantom1: PhantomData, phantom3: PhantomData})
     }
 }
 
@@ -380,7 +380,7 @@ LI: ArraySize + PartialEq + Debug
 // }
 
 
-impl<LE, LI, P> EncapsulateDeterministic for RsaEncapsulator <LE, LI, /*LK,*/ P>
+impl<LE, LI, P> EncapsulateDeterministic for RsaEncapsulator <LE, LI, P>
 where LI: Debug + ArraySize + Send + Sync,
     LE:  Debug + ArraySize,
     P: PaddingScheme + Default,
@@ -389,7 +389,6 @@ where LI: Debug + ArraySize + Send + Sync,
     P: Sync + Send + 'static,
     Sum<LE, U14>: ArraySize,
 {
-    type Kem = RsaKem<LE,LI,P>;
     type SeedSize = p256::U32;
     
     fn encapsulate_deterministic(&self, seed: &[u8]) -> (Ciphertext<Self::Kem>, SharedKey<Self::Kem>) {
@@ -404,8 +403,9 @@ where LI: Debug + ArraySize + Send + Sync,
                 continue;
             }
             
-            let encapsulated_key = Array::try_from(&encapsulated_key_as_vec).unwrap(); //).map_err(|_err| kem::Error)?;
-            return (encapsulated_key.clone(), raw_shared_key)
+            if let Ok(encapsulated_key) = Array::try_from(&encapsulated_key_as_vec) { //).map_err(|_err| kem::Error)?;
+                return (encapsulated_key.clone(), raw_shared_key)
+            }
         }
         panic!("DFSDF");
     }
@@ -660,18 +660,19 @@ where P: PaddingScheme + Default + Sync + Send + 'static,
     }
 }
 
-impl<LI, LK, P> Decapsulate for RsaDecapsulator<LI, LK, P>
+impl<LI, LK, P> TryDecapsulate for RsaDecapsulator<LI, LK, P>
 where P: PaddingScheme + Default + Sync + Send + 'static,
     LI: ArraySize + Send + Sync+ PartialEq + Add<U14>,
     LK: ArraySize + Send + Sync + PartialEq, 
     Sum<LI, U14>: ArraySize,
 {
-    fn decapsulate(
+    type Error = rsa::Error; //std::array::TryFromSliceError;
+    fn try_decapsulate(
         &self,
         _ct: &Ciphertext<Self::Kem>,
-    ) -> SharedKey<Self::Kem> {
-        let raw_secret = self.recipient_private.decrypt(P::default(), &_ct).map_err(|_v|()).unwrap();
-        Array::try_from(raw_secret).unwrap()
+    ) -> Result<SharedKey<Self::Kem>, Self::Error> {
+        let raw_secret = self.recipient_private.decrypt(P::default(), &_ct)?;
+        Array::try_from(raw_secret).map_err(|_err| rsa::Error::Decryption)
     }
 }
 
@@ -750,8 +751,6 @@ where P: PaddingScheme + Default + 'static + Sync + Send,
         R: rand::CryptoRng + ?Sized {
         let mut raw_shared_key = Array::<u8, LK>::default();
         
-        //let mut rng2 = wrapper::RngWrapper::from(_rng);
-            
         // Use a loop because the RSA-KEM padding technique may fail. Simply retry with a new random number
         for _i in 1..10 {
             //if wrapper::RngWrapper::try_fill_bytes(&mut rng2, &mut raw_shared_key).is_err() {
@@ -766,8 +765,9 @@ where P: PaddingScheme + Default + 'static + Sync + Send,
                 continue;
             }
             
-            let encapsulated_key = Array::try_from(&encapsulated_key_as_vec).unwrap(); //).map_err(|_err| kem::Error)?;
-            return (encapsulated_key.clone(), raw_shared_key)
+            if let Ok(encapsulated_key) = Array::try_from(&encapsulated_key_as_vec) {
+                return (encapsulated_key, raw_shared_key)
+            }
         }
         panic! ( "Unhandled)");
         

@@ -10,7 +10,7 @@ use kdfs::InitSalt;
 use kdfs::nistsp800_56::ConcatKdf;
 use kdfs::hybrid_array::Array;
 
-use kem::{Decapsulate};
+use kem::{Decapsulate, TryDecapsulate};
 use kems::nistsp800_56a::EccOnePassUnifiedKem;
 use kems::{EncapsulateDeterministic, KemExtensions, SetKdf};
 use kems::eckem::{EcMqvAuthKem, EcRaw2Encoder, EcUncompressedEncoder, EcdhAuthKemCompressed, EcdhKem};
@@ -65,9 +65,9 @@ fn test_cavp_kasvs_ecdh_p256() {
     assert_eq!( c0_calc[32..], QeIUTy );
     assert_eq!( k_calc.as_slice(), DKM);
 
-    let mut decapsulator = Kem::try_from_bytes_decap(&dsCAVS.into());
+    let mut decapsulator = Kem::try_from_bytes_decap(&dsCAVS.into()).unwrap();
     decapsulator.set_kdf(ConcatKdf::<Sha256>::new_with_salt(&OI));
-    let k_calc2 = decapsulator.decapsulate(&c0_calc);
+    let k_calc2 = decapsulator.try_decapsulate(&c0_calc).unwrap();
     
     assert_eq!( k_calc2.as_slice(), DKM);
 

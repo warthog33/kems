@@ -1,7 +1,7 @@
 use elliptic_curve::PrimeField;
 use hex_literal::hex;
 use kdfs::ansi_x9_63::X963Kdf;
-use kem::Decapsulate;
+use kem::TryDecapsulate;
 use kems::{KemExtensions, EncapsulateDeterministic, eckem::{EcRaw2Encoder, EcdhKem}, kem_with_kdf::{CombinerNoKeys, KemWithKdf}};
 use p256::U32;
 use p521::NistP521;
@@ -33,7 +33,7 @@ fn test_ecdh ()
 
     let decapsulator = KemWithKdf::<EcdhKem<NistP521, EcRaw2Encoder<NistP521>>, CombinerNoKeys, X963Kdf<Sha512>, U32>::from_private_key(d);
 
-    let key2 = decapsulator.decapsulate(&ephem_pub.into());
+    let key2 = decapsulator.try_decapsulate(&ephem_pub.into()).unwrap();
 
     assert_eq!(key2, key)
 

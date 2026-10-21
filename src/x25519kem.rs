@@ -4,7 +4,7 @@
 //! 
 //! ```
 //! use sha2::Sha256;
-//! use kem::{Kem, Encapsulate, Decapsulate};
+//! use kem::{Kem, Encapsulate, TryDecapsulate};
 //! use kems::x25519kem::{X25519Encapsulator, X25519Decapsulator, X25519Kem};
 //! use kems::kem_with_kdf::{CombinerAllPubKeys, KemWithKdf};
 //! use kdfs::hybrid_array::{Array, typenum::consts::*};
@@ -15,7 +15,7 @@
 //! 
 //! let (c0_send, k_send) = encapsulator.encapsulate();
 //!  
-//! let (k_recv) = decapsulator.decapsulate(&c0_send);
+//! let (k_recv) = decapsulator.try_decapsulate(&c0_send).unwrap();
 //! assert! ( k_send == k_recv);
 //! ```
 //! 
@@ -24,7 +24,7 @@
 //! ```
 //! use cipher::typenum::consts::U32;
 //! use rand_core::OsRng;
-//! use kem::{Encapsulate, Decapsulate};
+//! use kem::{Encapsulate, TryDecapsulate};
 //! use kems::{FromKey, FromKeys};
 //! use kems::x25519kem::X25519AuthKem;
 //! use kems::kem_with_kdf::{KemAuthWithKdf, CombinerAllPubKeys};
@@ -41,7 +41,7 @@
 //! let (c0, k_send) = auth_encapsulator.encapsulate();
 //!
 //! let auth_decapsulator = KemAuthWithKdf::<X25519AuthKem, CombinerAllPubKeys, Kdf1::<Sha256>, U32>::decap_from_keys(sender_public_key, recipient_secret_key);
-//! let k_recv = auth_decapsulator.decapsulate(&c0);
+//! let k_recv = auth_decapsulator.try_decapsulate(&c0).unwrap();
 //! assert!( k_send == k_recv);
 //! ```
 
@@ -148,7 +148,7 @@ impl FromKey for X25519Encapsulator
 
 impl EncapsulateDeterministic for X25519Encapsulator
 {
-    type Kem = X25519Kem;
+    //type Kem = X25519Kem;
     type SeedSize = U32;
     
     fn encapsulate_deterministic(&self, seed: &[u8]) -> (kem::Ciphertext<Self::Kem>, kem::SharedKey<Self::Kem>) {
@@ -336,7 +336,7 @@ impl Encapsulate for X25519AuthEncapsulator
 
 impl EncapsulateDeterministic for X25519AuthEncapsulator
 {
-    type Kem = X25519AuthKem;
+    //type Kem = X25519AuthKem;
     type SeedSize = U32;
     
     fn encapsulate_deterministic(&self, seed: &[u8]) -> (Ciphertext<Self::Kem>, SharedKey<Self::Kem>) {

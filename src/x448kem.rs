@@ -7,7 +7,7 @@
 //! 
 //! use rand_core::OsRng;
 //! use kdfs::iso18033_2::Kdf1;
-//! use kem::{Decapsulate, Encapsulate};
+//! use kem::{TryDecapsulate, Encapsulate};
 //! use kems::x448kem::{X448Encapsulator, X448Decapsulator, X448Kem};
 //! use kems::{KemExtensions, FromKeys};
 //! use kems::kem_with_kdf::{CombinerAllPubKeys, KemWithKdf};
@@ -21,7 +21,7 @@
 //! let (ct, k_send) = encapsulator.encapsulate();
 //!
 //! let decapsulator = KemWithKdf::<X448Kem, CombinerAllPubKeys, Kdf1::<Sha256>, U32>::from_private_key(recipient_secret_key);
-//! let (k_recv) = decapsulator.decapsulate(&ct);
+//! let (k_recv) = decapsulator.try_decapsulate(&ct).unwrap();
 //! assert! ( k_send == k_recv);
 //! ```
 //! 
@@ -31,7 +31,7 @@
 //! use sha2::Sha256;
 //! use rand_core::OsRng;
 //! use x448::{StaticSecret, PublicKey};
-//! use kem::{Decapsulate, Encapsulate};
+//! use kem::{TryDecapsulate, Encapsulate};
 //! use kems::x448kem::{X448AuthKem};
 //! use cipher::typenum::consts::U32;
 //! use kdfs::iso18033_2::Kdf1;
@@ -47,7 +47,7 @@
 //! let (ct, k_send) = auth_encapsulator.encapsulate();
 //! 
 //! let auth_decapsulator = KemAuthWithKdf::<X448AuthKem, CombinerAllPubKeys, Kdf1::<Sha256>, U32>::decap_from_keys(sender_public_key, recipient_secret_key);
-//! let k_recv = auth_decapsulator.decapsulate(&ct);
+//! let k_recv = auth_decapsulator.try_decapsulate(&ct).unwrap();
 //! assert!( k_send == k_recv);
 //! ```
 
@@ -141,7 +141,6 @@ impl Encapsulate for X448Encapsulator
 
 impl EncapsulateDeterministic for X448Encapsulator
 {
-    type Kem = X448Kem;
     type SeedSize = U56;
     
     fn encapsulate_deterministic(&self, seed: &[u8]) -> (Ciphertext<Self::Kem>, SharedKey<Self::Kem>) {
@@ -204,14 +203,14 @@ impl KeyExport for X448Decapsulator
 impl KeyInit for X448Decapsulator
 {
     fn new(key: &Key<Self>) -> Self {
-        let recipient_private = StaticSecret::from(<[u8;56]>::from(key.clone()));
+        let recipient_private = StaticSecret::from(<[u8;56]>::from(*key));
         Self::from_key(recipient_private)
     }
 }
 impl TryKeyInit for X448Decapsulator
 {
     fn new(key: &Key<Self>) -> Result<X448Decapsulator, InvalidKey> {
-        let recipient_private = StaticSecret::from(<[u8;56]>::from(key.clone()));
+        let recipient_private = StaticSecret::from(<[u8;56]>::from(*key));
         Ok(Self::from_key(recipient_private))
     }
 }

@@ -1,7 +1,7 @@
 use cipher::typenum::consts::U16;
 use kdfs::iso18033_2::Kdf1;
 use kdfs::hybrid_array::Array;
-use kem::{Decapsulate, Encapsulate, Kem};
+use kem::{TryDecapsulate, Encapsulate, Kem};
 use kems::{KemExtensions};
 use kems::FromKey;
 use kems::kem_with_kdf::{KemWithKdf, CombinerAllPubKeys, KemAuthWithKdf};
@@ -24,7 +24,7 @@ fn simple_x25519_kem ()
     let (c0_send, k_send) = encapsulator.encapsulate();
     
     let decapsulator = <KemWithKdf::<X25519Kem, CombinerAllPubKeys, Kdf1::<Sha256>, U16> as Kem>::DecapsulationKey::from_key(recipient_secret_key);
-    let k_recv: Array<u8, U16> = Decapsulate::decapsulate(&decapsulator, &c0_send);
+    let k_recv: Array<u8, U16> = TryDecapsulate::try_decapsulate(&decapsulator, &c0_send).unwrap();
 
     assert_eq! ( k_send.as_slice(), k_recv.as_slice());
 }
@@ -59,7 +59,7 @@ fn simple_x25519_kem3 ()
     let decapsulator = <KemWithKdf::<X25519Kem, CombinerAllPubKeys, Kdf1::<Sha256>,U16> as Kem>::DecapsulationKey::from_key(recipient_secret_key);
 
     //let k_recv = ml_kem::Decapsulate::decapsulate(&decapsulator, &c0_send);
-    let k_recv = Decapsulate::decapsulate(&decapsulator, &c0_send.0.into());
+    let k_recv = TryDecapsulate::try_decapsulate(&decapsulator, &c0_send.0.into()).unwrap();
     assert_eq! ( k_send.as_slice(), k_recv.as_slice());
 
     let k_recv2 = ml_kem::kem::TryDecapsulate::try_decapsulate(&decapsulator, &c0_send).unwrap();
@@ -80,7 +80,7 @@ fn auth_x25519_kem () {
     let (c0_send, k_send) = encapsulator.encapsulate();
 
     let decapsulator = X25519Kdf1Sha256::decap_from_keys(sender_public_key, recipient_secret_key );
-    let k_recv: Array<u8, U16> = decapsulator.decapsulate(&c0_send);
+    let k_recv: Array<u8, U16> = decapsulator.try_decapsulate(&c0_send).unwrap();
 
     assert_eq! ( k_send.as_slice(), k_recv.as_slice());
 }
@@ -93,7 +93,7 @@ fn x25519_test_new_kem_traits () {
     //let (encapsulator, decapsulator) = X25519Capsulator::<EcCombinerAllPubKeys::<Kdf1::<Sha256>>,U16, SeedAsScalar>::generate(&mut OsRng);
     let (decapsulator,encapsulator ) = KemWithKdf::<X25519Kem, CombinerAllPubKeys, Kdf1::<Sha256>, U16>::generate_keypair();
     let (ek, ss1)  = encapsulator.encapsulate();
-    let ss2 = decapsulator.decapsulate(&ek);
+    let ss2 = decapsulator.try_decapsulate(&ek).unwrap();
     assert_eq!(ss1, ss2);
 }
 
@@ -102,7 +102,7 @@ fn x25519_test_new_kem_traits () {
 fn x448_test_new_kem_traits () {
     let (decapsulator, encapsulator) = KemWithKdf::<X448Kem, CombinerAllPubKeys, Kdf1::<Sha256>, U16>::generate_keypair();
     let (ek, ss1) = encapsulator.encapsulate(); 
-    let ss2 = decapsulator.decapsulate(&ek);
+    let ss2 = decapsulator.try_decapsulate(&ek).unwrap();
 
     assert_eq!(ss1, ss2);
 }
@@ -120,7 +120,7 @@ fn x448_test_5 () {
     let (ct, k_send) = auth_encapsulator.encapsulate();
 
     let auth_decapsulator = KemAuthWithKdf::<X448AuthKem, CombinerAllPubKeys, Kdf1::<Sha256>, U32>::decap_from_keys(sender_public_key, recipient_secret_key);
-    let k_recv = auth_decapsulator.decapsulate(&ct);
+    let k_recv = auth_decapsulator.try_decapsulate(&ct).unwrap();
 
     assert_eq!(k_send, k_recv);
 }

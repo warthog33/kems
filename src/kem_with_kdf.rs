@@ -94,7 +94,7 @@ impl<K: Kdf<L> + Default, const INCLUDE_KEY_LEN: bool, L: ArraySize> Kdf<L> for 
 /// A combiner inputs the shared secret, ciphertext and public key/s and pushes it through a KDF to derive an output key
 pub trait Combiner {
     //fn combine<L: ArraySize, K: KdfSlice>(raw_shared_secret: impl AsRef<[u8]>, ephemeral_pub: impl AsRef<[u8]>, encapsulator: &impl KeyExport, kdf: &K ) -> Result<Array<u8, L>, ()>;
-    fn combine<L: ArraySize, K: Kdf<L>>(raw_shared_secret: impl AsRef<[u8]>, ephemeral_pub: impl AsRef<[u8]>, encapsulator: &impl KeyExport, kdf: &K ) -> Result<Array<u8, L>, ()>;
+    fn combine<L: ArraySize, K: Kdf<L>>(raw_shared_secret: impl AsRef<[u8]>, ephemeral_pub: impl AsRef<[u8]>, encapsulator: &impl KeyExport, kdf: &K ) -> Array<u8, L>;
 }
 
 
@@ -107,8 +107,8 @@ pub trait Combiner {
 pub struct CombinerCiphertext;
 
 impl Combiner for CombinerCiphertext {
-    fn combine<L: ArraySize, K: Kdf<L>>(raw_shared_secret: impl AsRef<[u8]>, ciphertext: impl AsRef<[u8]>, _encapsulator: &impl KeyExport, kdf: &K ) -> Result<Array<u8, L>, ()> {
-        Ok(kdf.derive_self_secret_other(raw_shared_secret.as_ref(), ciphertext.as_ref()))
+    fn combine<L: ArraySize, K: Kdf<L>>(raw_shared_secret: impl AsRef<[u8]>, ciphertext: impl AsRef<[u8]>, _encapsulator: &impl KeyExport, kdf: &K ) -> Array<u8, L> {
+        kdf.derive_self_secret_other(raw_shared_secret.as_ref(), ciphertext.as_ref())
     }
 }
 
@@ -121,8 +121,8 @@ impl Combiner for CombinerCiphertext {
 pub struct CombinerAllPubKeys;
 
 impl Combiner for CombinerAllPubKeys {
-    fn combine<L: ArraySize, K: Kdf<L>>(raw_shared_secret: impl AsRef<[u8]>, ciphertext: impl AsRef<[u8]>, encapsulator: &impl KeyExport, kdf: &K ) -> Result<Array<u8, L>,()> {
-        Ok(kdf.derive_self_secret_others(raw_shared_secret.as_ref(), [ciphertext.as_ref(), &encapsulator.to_bytes()]))
+    fn combine<L: ArraySize, K: Kdf<L>>(raw_shared_secret: impl AsRef<[u8]>, ciphertext: impl AsRef<[u8]>, encapsulator: &impl KeyExport, kdf: &K ) -> Array<u8, L> {
+        kdf.derive_self_secret_others(raw_shared_secret.as_ref(), [ciphertext.as_ref(), &encapsulator.to_bytes()])
     }
 }
 
@@ -134,8 +134,8 @@ impl Combiner for CombinerAllPubKeys {
 pub struct CombinerNoKeys;
 
 impl Combiner for CombinerNoKeys {
-    fn combine<L: ArraySize, K: Kdf<L>>(raw_shared_secret: impl AsRef<[u8]>, _ciphertext: impl AsRef<[u8]>, _encapsulator: &impl KeyExport, kdf: &K ) -> Result<Array<u8, L>, ()> {
-        Ok(kdf.derive_self_secret_other(raw_shared_secret.as_ref(), &[]))
+    fn combine<L: ArraySize, K: Kdf<L>>(raw_shared_secret: impl AsRef<[u8]>, _ciphertext: impl AsRef<[u8]>, _encapsulator: &impl KeyExport, kdf: &K ) -> Array<u8, L> {
+        kdf.derive_self_secret_other(raw_shared_secret.as_ref(), &[])
     }
 }
 
@@ -279,7 +279,7 @@ where KEM: Kem,
     where
         R: rand::CryptoRng + ?Sized {
         let (ciphertext, raw_shared_secret) = Encapsulate::encapsulate_with_rng(&self.encapsulator, _rng);
-        let shared_secret = COM::combine(raw_shared_secret, &ciphertext, &self.encapsulator, &self.kdf).unwrap();
+        let shared_secret = COM::combine(raw_shared_secret, &ciphertext, &self.encapsulator, &self.kdf);
         (ciphertext, shared_secret)
     }
 }
@@ -419,13 +419,13 @@ where KEM: Kem,
     KDF: Default + Kdf<N> + Default + Sync + Clone + Send + 'static,
     N: ArraySize + Ord + Sync + Send,
 {
-    type Kem = KemWithKdf<KEM,COM,KDF,N>;
+    //type Kem = KemWithKdf<KEM,COM,KDF,N>;
     type SeedSize = <KEM::EncapsulationKey as EncapsulateDeterministic>::SeedSize;
 
     fn encapsulate_deterministic(&self, seed: &[u8]) -> (Ciphertext<Self::Kem>, SharedKey<Self::Kem>) {
         let (ciphertext, raw_shared_secret) = self.encapsulator.encapsulate_deterministic(seed);
         
-        let shared_secret = COM::combine(raw_shared_secret, &ciphertext, &self.encapsulator, &self.kdf).unwrap();
+        let shared_secret = COM::combine(raw_shared_secret, &ciphertext, &self.encapsulator, &self.kdf);
         (ciphertext, shared_secret)
     }
 }
@@ -471,18 +471,37 @@ where KEM: kem::Kem,
     }
 }
 
-impl<KEM,COM,KDF,N> Decapsulate for KemWithKdfDecapsulator<KEM,COM,KDF,N>
+impl<KEM,COM,KDF,N> TryDecapsulate for KemWithKdfDecapsulator<KEM,COM,KDF,N>
 where KEM: Kem, 
-    KEM::EncapsulationKey: TryKeyInit + Eq + Clone + Debug + Encapsulate,
+    //KEM::EncapsulationKey: TryKeyInit + Eq + Clone + Debug + Encapsulate,
+    //KEM::DecapsulationKey: Decapsulate,
+    
     COM: Combiner + Debug + Ord + Default + Copy + Sync + Send + 'static,
     KDF: Kdf<N> + Default + Sync + Send + Clone + 'static,
     N: ArraySize + Ord + Sync + Send,
 {
-    fn decapsulate(&self, ct: &kem::Ciphertext<Self::Kem>) -> kem::SharedKey<Self::Kem> {
-        let raw_shared_secret = self.decapsulator.try_decapsulate(ct).unwrap();
-        COM::combine(raw_shared_secret, ct, self.decapsulator.encapsulation_key(), &self.kdf).unwrap()
+    type Error = <KEM::DecapsulationKey as TryDecapsulate>::Error;
+    
+    fn try_decapsulate(&self, ct: &Ciphertext<Self::Kem>) -> Result<SharedKey<Self::Kem>, Self::Error> {
+        let raw_shared_secret = self.decapsulator.try_decapsulate(ct)?;
+        let shared_secret = COM::combine(raw_shared_secret, ct, self.decapsulator.encapsulation_key(), &self.kdf);
+        Ok(shared_secret)
     }
 }
+// impl<KEM,COM,KDF,N> Decapsulate for KemWithKdfDecapsulator<KEM,COM,KDF,N>
+// where KEM: Kem, 
+//     KEM::DecapsulationKey: Decapsulate,
+//     COM: Combiner + Debug + Ord + Default + Copy + Sync + Send + 'static,
+//     KDF: Kdf<N> + Default + Sync + Send + Clone + 'static,
+//     N: ArraySize + Ord + Sync + Send,
+// {
+//     fn decapsulate(&self, ct: &Ciphertext<Self::Kem>) -> SharedKey<Self::Kem> {
+//         let raw_shared_secret = self.decapsulator.decapsulate(ct);
+//         let shared_secret = COM::combine(raw_shared_secret, ct, self.decapsulator.encapsulation_key(), &self.kdf);
+//         shared_secret
+//     }
+// }
+
 
 
 impl<KEM,COM,KDF,N> FromKey for KemWithKdfDecapsulator<KEM,COM,KDF,N> 
@@ -853,9 +872,9 @@ where KEM: Kem,
     COM: Combiner + Send + Sync + 'static,
     KEM::DecapsulationKey: Decapsulate,
 {
-    fn decapsulate(&self, ct: &kem::Ciphertext<Self::Kem>) -> kem::SharedKey<Self::Kem> {
-        let raw_shared_secret = self.decapsulator.decapsulate(ct.as_slice().try_into().unwrap());
-        COM::combine(raw_shared_secret, ct, self.decapsulator.encapsulation_key(), &self.kdf).unwrap()
+    fn decapsulate(&self, ct: &Ciphertext<Self::Kem>) -> SharedKey<Self::Kem> {
+        let raw_shared_secret = self.decapsulator.decapsulate(ct);
+        COM::combine(raw_shared_secret, ct, self.decapsulator.encapsulation_key(), &self.kdf)
     }
 }
 
@@ -882,7 +901,7 @@ where KEM: Kem,
         R: rand::prelude::CryptoRng + ?Sized {
 
         let (ciphertext, raw_shared_secret) = self.encapsulator.encapsulate_with_rng(_rng);
-        let shared_secret = COM::combine(raw_shared_secret, &ciphertext, &self.encapsulator, &self.kdf).unwrap();
+        let shared_secret = COM::combine(raw_shared_secret, &ciphertext, &self.encapsulator, &self.kdf);
         (ciphertext, shared_secret)   
     }
 }
@@ -894,12 +913,12 @@ where KEM: kem::Kem + Kem,
     KEM::DecapsulationKey: Decapsulate,
     KEM::EncapsulationKey: EncapsulateDeterministic<Kem=KEM>,
 {
-    type Kem = KemAuthWithKdf<KEM,COM,KDF,L>;
+    //type Kem = KemAuthWithKdf<KEM,COM,KDF,L>;
     type SeedSize = <KEM::EncapsulationKey as EncapsulateDeterministic>::SeedSize;
     
     fn encapsulate_deterministic(&self, seed: &[u8]) -> (kem::Ciphertext<Self::Kem>, kem::SharedKey<Self::Kem>) {
         let (ciphertext, raw_shared_secret) = self.encapsulator.encapsulate_deterministic(seed);
-        let shared_secret = COM::combine(raw_shared_secret, &ciphertext, &self.encapsulator, &self.kdf).unwrap();
+        let shared_secret = COM::combine(raw_shared_secret, &ciphertext, &self.encapsulator, &self.kdf);
         (ciphertext, shared_secret)
     }
 }

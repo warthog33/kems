@@ -18,7 +18,7 @@
 //! use kdfs::ansi_x9_63::X963KdfSha256;
 //! use kems::kem_with_kdf::{KemWithKdf, CombinerNoKeys};
 //! use kems::{FromKey};
-//! use kem::{Encapsulate, Decapsulate};
+//! use kem::{Encapsulate, TryDecapsulate};
 //! 
 //! 
 //! let recipient_secret_key = SecretKey::generate();
@@ -29,7 +29,7 @@
 //! let (ct, k_send) = encapsulator.encapsulate();
 //! 
 //! let decapsulator = EcdhX963Sha256::from_private_key(recipient_secret_key);
-//! let k_recv = decapsulator.decapsulate(&ct);
+//! let k_recv = decapsulator.try_decapsulate(&ct).unwrap();
 //! assert! ( k_send == k_recv);
 //! ```
   
@@ -46,14 +46,14 @@ use cipher::typenum::Unsigned;
 use const_oid::AssociatedOid;
 use elliptic_curve::{AffinePoint, Curve, CurveArithmetic, FieldBytesSize, Generate, NonZeroScalar, PrimeCurve, ProjectivePoint, PublicKey, Scalar, ScalarValue, SecretKey};
 use elliptic_curve::bigint::Encoding;
-use elliptic_curve::sec1::{CompressedPointSize, FromSec1Point, ModulusSize, Sec1Point, ToSec1Point, UncompressedPointSize, ValidatePublicKey};
+use elliptic_curve::sec1::{CompressedPointSize, FromSec1Point, ModulusSize, ToSec1Point, UncompressedPointSize, ValidatePublicKey};
 #[allow(unused)]
 use elliptic_curve::point::{AffineCoordinates, PointCompression,DecompactPoint};
 #[allow(unused)]
 use elliptic_curve::bigint::ArrayEncoding;
 
 use kdfs::hybrid_array::{Array, ArraySize};
-use kem::{Ciphertext, Decapsulate, DecapsulationKey, Decapsulator, Encapsulate, EncapsulationKey, FromSeed, InvalidKey, Kem, Key, Seed, SharedKey, TryKeyInit};
+use kem::{Ciphertext, Decapsulate, DecapsulationKey, Decapsulator, Encapsulate, EncapsulationKey, FromSeed, InvalidKey, Kem, Key, Seed, SharedKey, TryDecapsulate, TryKeyInit};
 
 use crate::{EncapsulateDeterministic};
 use crate::{FromKey, FromKeys};
@@ -64,16 +64,11 @@ pub type UntaggedPointSize<C> = <FieldBytesSize<C> as ModulusSize>::UntaggedPoin
 /// Used for encoding a public key or shared secret to a byte array
 pub trait EcEncode<C: CurveArithmetic> {
     type Error: Debug;
-    
     type PublicKeyLen: ArraySize;
+    type SharedSecretLen: ArraySize;
+    
     fn encode_public_key(source: &PublicKey<C>) -> Array<u8, Self::PublicKeyLen>;
     fn decode_public_key(encoded_bytes: &[u8]) -> Result<PublicKey<C>, Self::Error>;
-    
-    // type CiphertextLen: ArraySize;
-    // fn encode_ciphertext(source: &PublicKey<C>) -> Array<u8, Self::CiphertextLen>;
-    // fn decode_ciphertext(source: &Array<u8, Self::CiphertextLen>) -> Result<PublicKey<C>, Self::Error>;
-
-    type SharedSecretLen: ArraySize;
     fn encode_shared_secret ( point: &AffinePoint<C> ) -> Array<u8, Self::SharedSecretLen>;
 }
 
@@ -97,8 +92,7 @@ where   C: CurveArithmetic + PointCompression,
     }
         
     fn decode_public_key(encoded_bytes: &[u8]) -> Result<PublicKey<C>, Self::Error> {
-        let array = encoded_bytes.try_into()?;
-        let point = Option::from(AffinePoint::<C>::decompact(array)).ok_or(elliptic_curve::Error)?;
+        let point = AffinePoint::<C>::decompact(encoded_bytes.try_into()?).into_option().ok_or(elliptic_curve::Error)?;
         PublicKey::<C>::from_affine(point)
     }
     
@@ -164,49 +158,52 @@ where   C: CurveArithmetic+PointCompression,
 
 
 ///
-/// Format consisting of x-coordinate || y-coordinate as byte arrays 
+/// Format consisting of x-coordinate || y-coordinate as byte arrays for both the public key and the shared secret. 
 /// 
 pub struct EcRawEncoder<C> ( PhantomData<C>);
 
 impl<C> EcEncode<C> for EcRawEncoder<C>
-    where   C: CurveArithmetic+PointCompression, 
-        C::FieldBytesSize: ModulusSize,
-        C::AffinePoint: FromSec1Point<C> + ToSec1Point<C>,
-        UncompressedPointSize<C>: Sub<U1, Output = UntaggedPointSize<C>>,
+    where   C: CurveArithmetic, 
+        <C::FieldBytesSize as Add>::Output: ArraySize,
+        <C::FieldBytesSize as Add>::Output: Sub<C::FieldBytesSize, Output=C::FieldBytesSize>,
 {
     type Error = elliptic_curve::Error;
-    type PublicKeyLen = UntaggedPointSize<C>;
-    type SharedSecretLen = UntaggedPointSize<C>;
+    type PublicKeyLen = Sum<C::FieldBytesSize, C::FieldBytesSize>;
+    type SharedSecretLen = Sum<C::FieldBytesSize, C::FieldBytesSize>;
 
     // returns the untagged byte array, x || y
     fn encode_public_key(public_key: &PublicKey<C>) -> Array<u8, Self::PublicKeyLen> {
-        let (_, payload) = public_key.to_uncompressed_point().split::<U1>();
-        payload
+        public_key.as_affine().x().concat(public_key.as_affine().y())   
     }
     fn decode_public_key(encoded_bytes: &[u8]) -> Result<PublicKey<C>, Self::Error> {
-        let encoded_point = Sec1Point::<C>::from_untagged_bytes(&Array::try_from(encoded_bytes)?);
-        PublicKey::<C>::from_sec1_point(&encoded_point).into_option().ok_or(elliptic_curve::Error)
+        let xy = Array::<u8, Sum<C::FieldBytesSize, C::FieldBytesSize>>::slice_as_array(encoded_bytes).ok_or(elliptic_curve::Error)?;
+        let (x,y) = Array::split_ref::<C::FieldBytesSize>(xy);
+        
+        // let x = Array::<u8, C::FieldBytesSize>::slice_as_array(&encoded_bytes[..C::FieldBytesSize::USIZE]).ok_or(elliptic_curve::Error)?;
+        // let y = Array::<u8, C::FieldBytesSize>::slice_as_array(&encoded_bytes[C::FieldBytesSize::USIZE..]).ok_or(elliptic_curve::Error)?;
+
+        let p = AffinePoint::<C>::from_coordinates(x, y).into_option().ok_or(elliptic_curve::Error)?;
+        PublicKey::<C>::from_affine(p)
+
     }
     fn encode_shared_secret ( point: &AffinePoint<C> ) -> Array<u8, Self::SharedSecretLen> {
-        let (_, payload) = point.to_uncompressed_point().split::<U1>();
-        payload
+        point.x().concat(point.y())
     }
 }
 
 ///
-/// Encodes or Decodes according to SEC1 uncompressed format, ie a single byte identifier followed by the x-coordinate and y-coordinates
+/// Format consisting of x-coordinate || y-coordinate as byte arrays for the public key, the shared secret is simply the x coordinate as a byte array. 
+/// Reuses most of the functions from EcRawEncoder, but overrides the encode_shared_secret function to only return the x coordinate
 ///
 pub struct EcRaw2Encoder<C> ( PhantomData<C>);
 
 impl<C> EcEncode<C> for EcRaw2Encoder<C>
-where   C: CurveArithmetic+PointCompression, 
-        C::FieldBytesSize: ModulusSize,
-        C::AffinePoint: FromSec1Point<C> + ToSec1Point<C>,
-        FieldBytesSize<C>: Add,
-        UncompressedPointSize<C>: Sub<U1, Output = UntaggedPointSize<C>>,
+where   C: CurveArithmetic, 
+        <C::FieldBytesSize as Add>::Output: ArraySize,
+        <C::FieldBytesSize as Add>::Output: Sub<C::FieldBytesSize, Output=C::FieldBytesSize>,
 {
-    type Error = elliptic_curve::Error;
-    type PublicKeyLen = UntaggedPointSize<C>;
+    type Error = <EcRawEncoder<C> as EcEncode<C>>::Error;
+    type PublicKeyLen = <EcRawEncoder<C> as EcEncode<C>>::PublicKeyLen;
     type SharedSecretLen = FieldBytesSize<C>;
     
     fn encode_public_key(public_key: &PublicKey<C>) -> Array<u8, Self::PublicKeyLen> {
@@ -250,6 +247,7 @@ where C: Sync + Send,
     C::FieldBytesSize: ModulusSize,
     C::AffinePoint: FromSec1Point<C> + ToSec1Point<C>,
     E: EcEncode<C> + Sync + Send + 'static,
+    <E as EcEncode<C>>::Error: std::error::Error
 {
     type EncapsulationKey = EcdhEncapsulator<C,E>;
     type DecapsulationKey = EcdhDecapsulator<C,E>;
@@ -272,6 +270,7 @@ where C: Sync + Send,
     C::FieldBytesSize: ModulusSize,
     C::AffinePoint: FromSec1Point<C> + ToSec1Point<C>,
     E: EcEncode<C> + Sync + Send + 'static,
+    <E as EcEncode<C>>::Error: std::error::Error
 {
     type SeedSize = C::FieldBytesSize;
 
@@ -507,7 +506,8 @@ where   E: EcEncode<C>,
         let public_point = self.recipient_public.to_projective();
 
         let raw_shared_secret_1 = public_point * *ephemeral_prv.to_nonzero_scalar();
-        let raw_shared_secret_2 = public_point * *self.sender_private.as_ref().unwrap().to_nonzero_scalar();
+        let Some(sender_private) = &self.sender_private else { return Err(()); };
+        let raw_shared_secret_2 = public_point * *sender_private.to_nonzero_scalar();
         
         let raw_shared_secret_1 = elliptic_curve::group::Curve::to_affine(&raw_shared_secret_1);
         let raw_shared_secret_2 = elliptic_curve::group::Curve::to_affine(&raw_shared_secret_2);
@@ -596,10 +596,10 @@ where C: CurveArithmetic+PointCompression + AssociatedOid + Curve + ValidatePubl
     fn new_from_slice(key: &[u8]) -> Result<Self, InvalidKey> {
         let recipient_private = if key.len() == C::FieldBytesSize::USIZE
         {
-            SecretKey::<C>::from_slice(key).unwrap()
+            SecretKey::<C>::from_slice(key).map_err(|_| InvalidKey)?
         }
         else {
-            SecretKey::<C>::from_sec1_der(key).unwrap()
+            SecretKey::<C>::from_sec1_der(key).map_err(|_| InvalidKey)?
         };
         let encapsulation_key = EcdhEncapsulator::<C,E>{recipient_public: recipient_private.public_key(), phantom: PhantomData};
         Ok(Self{recipient_private, encapsulation_key,phantom: PhantomData})
@@ -797,6 +797,7 @@ where C: Sync + Send,
     C::FieldBytesSize: ModulusSize,
     C::AffinePoint: FromSec1Point<C> + ToSec1Point<C>,
     E: EcEncode<C> + Sync + Send + 'static,
+    <E as EcEncode<C>>::Error: std::error::Error
 {
     type Kem = EcdhKem<C,E>;
 
@@ -820,22 +821,43 @@ where C: Sync + Send,
     }
 }
 
-impl<C, E> Decapsulate for EcdhDecapsulator<C,E>
+// impl<C, E> Decapsulate for EcdhDecapsulator<C,E>
+// where C: Sync + Send,
+//     C: CurveArithmetic+PointCompression,
+//     C::FieldBytesSize: ModulusSize,
+//     C::AffinePoint: FromSec1Point<C> + ToSec1Point<C>,
+//     E: Sync + Send + 'static + EcEncode<C>, 
+// {
+//     fn decapsulate(&self, ct: &Ciphertext<Self::Kem>) -> SharedKey<Self::Kem> {
+//         let encapped_key : PublicKey<C> = E::decode_public_key(&ct).unwrap();
+
+//         let public_point = ProjectivePoint::<C>::from(*encapped_key.as_affine());
+        
+//         let raw_shared_secret = public_point * *self.recipient_private.to_nonzero_scalar();
+//         let raw_shared_secret = elliptic_curve::group::Curve::to_affine(&raw_shared_secret);
+
+//         E::encode_shared_secret(&raw_shared_secret)
+//     }
+// }
+
+impl<C, E> TryDecapsulate for EcdhDecapsulator<C,E>
 where C: Sync + Send,
     C: CurveArithmetic+PointCompression,
     C::FieldBytesSize: ModulusSize,
     C::AffinePoint: FromSec1Point<C> + ToSec1Point<C>,
     E: Sync + Send + 'static + EcEncode<C>, 
+    <E as EcEncode<C>>::Error: std::error::Error,
 {
-    fn decapsulate(&self, ct: &Ciphertext<Self::Kem>) -> SharedKey<Self::Kem> {
-        let encapped_key : PublicKey<C> = E::decode_public_key(&ct).unwrap();
+    type Error = <E as EcEncode<C>>::Error;
+    fn try_decapsulate(&self, ct: &Ciphertext<Self::Kem>) -> Result<SharedKey<Self::Kem>, Self::Error> {
+        let encapped_key : PublicKey<C> = E::decode_public_key(&ct)?;
 
         let public_point = ProjectivePoint::<C>::from(*encapped_key.as_affine());
         
         let raw_shared_secret = public_point * *self.recipient_private.to_nonzero_scalar();
         let raw_shared_secret = elliptic_curve::group::Curve::to_affine(&raw_shared_secret);
 
-        E::encode_shared_secret(&raw_shared_secret)
+        Ok(E::encode_shared_secret(&raw_shared_secret))
     }
 }
 
@@ -847,6 +869,7 @@ where C: Sync + Send,
     C::AffinePoint: FromSec1Point<C> + ToSec1Point<C>,
     
     E: EcEncode<C> + Sync + Send + 'static,
+    <E as EcEncode<C>>::Error: std::error::Error
 {
     type Kem = EcdhKem<C,E>;
 
@@ -862,8 +885,9 @@ where   C: CurveArithmetic + PointCompression,
         C::AffinePoint: ToSec1Point<C> + FromSec1Point<C>,
         FieldBytesSize<C>: ModulusSize,
         E: EcEncode<C> + 'static + Send + Sync,
+        <E as EcEncode<C>>::Error: std::error::Error
 {
-    type Kem = EcdhKem<C,E>;
+    //type Kem = EcdhKem<C,E>;
     type SeedSize = FieldBytesSize<C>;
     
     fn encapsulate_deterministic(&self, seed: &[u8]) -> (Ciphertext<Self::Kem>, SharedKey<Self::Kem>) {
@@ -943,8 +967,7 @@ where E: EcEncode<C> + Sync + Send +'static, //+ DecodeKey<SecretKey<C>> + Encod
         let raw_shared_secret_1 = elliptic_curve::group::Curve::to_affine(&raw_shared_secret_1).x();
         let raw_shared_secret_2 = elliptic_curve::group::Curve::to_affine(&raw_shared_secret_2).x();
 
-        let raw_shared_secret = raw_shared_secret_1.concat::<C::FieldBytesSize>(raw_shared_secret_2);
-        raw_shared_secret
+        raw_shared_secret_1.concat::<C::FieldBytesSize>(raw_shared_secret_2)
     }
 }
 impl<C,DE> Generate for EcdhAuthDecapsulator<C,DE>
@@ -964,7 +987,7 @@ where E: EcEncode<C> + Sync + Send +'static, //+ DecodeKey<SecretKey<C>> + Encod
     E::PublicKeyLen: Add<E::PublicKeyLen>,
     Sum<E::PublicKeyLen, E::PublicKeyLen>: ArraySize,
 {
-    type Kem = EcdhAuthCapsulator<C,E>;
+    //type Kem = EcdhAuthCapsulator<C,E>;
     type SeedSize = C::FieldBytesSize;
 
     fn encapsulate_deterministic(&self, seed: &[u8]) -> (Ciphertext<Self::Kem>, SharedKey<Self::Kem>) {
@@ -1214,11 +1237,11 @@ where E: EcEncode<C> + Send + Sync + 'static,
     C::FieldBytesSize: ModulusSize,
     C::AffinePoint: ToSec1Point<C> + FromSec1Point<C>,    
 {
-    type Kem = EcMqvAuthKem<C,E>;
+    //type Kem = EcMqvAuthKem<C,E>;
     type SeedSize = C::FieldBytesSize;
 
     fn encapsulate_deterministic(&self, seed: &[u8]) -> (Ciphertext<Self::Kem>, SharedKey<Self::Kem>) {
-        let seed = Array::try_from(seed).unwrap();
+        let seed = Array::slice_as_array(seed).unwrap();
         let ephemeral_prv = SecretKey::<C>::from_bytes(&seed).unwrap();
         let ephemeral_pub = ephemeral_prv.public_key();
 
